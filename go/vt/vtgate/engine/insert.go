@@ -558,11 +558,15 @@ func (ins *Insert) processUnowned(vcursor VCursor, vindexColumnsKeys [][]sqltype
 		if ksids[rowNum] == nil {
 			continue
 		}
-		// Perform reverse map only for non-multi-column vindexes.
-		_, isMulti := colVindex.Vindex.(vindexes.MultiColumn)
-		if rowColumnKeys[0].IsNull() && !isMulti {
-			reverseIndexes = append(reverseIndexes, rowNum)
-			reverseKsids = append(reverseKsids, ksids[rowNum])
+
+		if rowColumnKeys[0].IsNull() {
+			// Perform reverse map only for reversible vindexes without a value.
+			_, isReversible := colVindex.Vindex.(vindexes.Reversible)
+
+			if isReversible {
+				reverseIndexes = append(reverseIndexes, rowNum)
+				reverseKsids = append(reverseKsids, ksids[rowNum])
+			}
 		} else {
 			verifyIndexes = append(verifyIndexes, rowNum)
 			verifyKeys = append(verifyKeys, rowColumnKeys)
@@ -606,6 +610,7 @@ func (ins *Insert) processUnowned(vcursor VCursor, vindexColumnsKeys [][]sqltype
 				ksids[verifyIndexes[i]] = nil
 			}
 		}
+
 		if len(mismatchVindexKeys) > 0 {
 			return fmt.Errorf("values %v for column %v does not map to keyspace ids", mismatchVindexKeys, colVindex.Columns)
 		}
