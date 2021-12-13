@@ -1518,7 +1518,7 @@ func TestInsertShardedUnownedReverseMap(t *testing.T) {
 	})
 }
 
-func TestInsertShardedUnownedReverseMapFail(t *testing.T) {
+func TestInsertShardedUnownedReverseMapSuccess(t *testing.T) {
 	invschema := &vschemapb.SrvVSchema{
 		Keyspaces: map[string]*vschemapb.Keyspace{
 			"sharded": {
@@ -1582,5 +1582,5 @@ func TestInsertShardedUnownedReverseMapFail(t *testing.T) {
 	vc := newDMLTestVCursor("-20", "20-")
 
 	_, err := ins.TryExecute(vc, map[string]*querypb.BindVariable{}, false)
-	require.EqualError(t, err, `value must be supplied for column [c3]`)
+	require.NoError(t, err)
 }
