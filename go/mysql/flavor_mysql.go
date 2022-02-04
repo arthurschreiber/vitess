@@ -261,17 +261,18 @@ const TablesWithSize56 = `SELECT table_name, table_type, unix_timestamp(create_t
 // TablesWithSize57 is a query to select table along with size for mysql 5.7.
 // It's a little weird, because the JOIN predicate only works if the table and databases do not contain weird characters.
 // As a fallback, we use the mysql 5.6 query, which is not always up to date, but works for all table/db names.
-const TablesWithSize57 = `SELECT t.table_name, t.table_type, unix_timestamp(t.create_time), t.table_comment, sum(i.file_size), sum(i.allocated_size) 
-	FROM information_schema.tables t, information_schema.innodb_sys_tablespaces i 
-	WHERE t.table_schema = database() and 
-	(i.name = concat(t.table_schema,'/',t.table_name) or i.name like concat(t.table_schema,'/',t.table_name, '#p#%')) 
-	group by t.table_name, t.table_type, unix_timestamp(t.create_time), t.table_comment, i.file_size
-UNION ALL
-	SELECT table_name, table_type, unix_timestamp(create_time), table_comment, SUM( data_length + index_length), SUM( data_length + index_length)
-	FROM information_schema.tables t
-	WHERE table_schema = database() AND 
-	NOT EXISTS(SELECT * FROM information_schema.innodb_sys_tablespaces i WHERE i.name = concat(t.table_schema,'/',t.table_name) or i.name like concat(t.table_schema,'/',t.table_name, '#p#%')) 
-	group by table_name, table_type, unix_timestamp(create_time), table_comment
+const TablesWithSize57 = `
+SELECT
+	t.table_name,
+	t.table_type,
+	UNIX_TIMESTAMP(t.create_time),
+	t.table_comment,
+	IFNULL(SUM(i.file_size), SUM(t.data_length + t.index_length)),
+	IFNULL(SUM(i.allocated_size), SUM(t.data_length + t.index_length))
+FROM information_schema.tables t
+LEFT OUTER JOIN information_schema.innodb_sys_tablespaces i ON i.name = CONCAT(t.table_schema, '/', t.table_name) or i.name LIKE CONCAT(t.table_schema, '/', t.table_name, '#p#%')
+WHERE t.table_schema = database()
+GROUP BY t.table_name
 `
 
 // TablesWithSize80 is a query to select table along with size for mysql 8.0
