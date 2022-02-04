@@ -270,7 +270,9 @@ SELECT
 	IFNULL(SUM(i.file_size), SUM(t.data_length + t.index_length)),
 	IFNULL(SUM(i.allocated_size), SUM(t.data_length + t.index_length))
 FROM information_schema.tables t
-LEFT OUTER JOIN information_schema.innodb_sys_tablespaces i ON i.name = CONCAT(t.table_schema, '/', t.table_name) or i.name LIKE CONCAT(t.table_schema, '/', t.table_name, '#p#%')
+LEFT OUTER JOIN (
+	SELECT * FROM information_schema.innodb_sys_tablespaces WHERE name LIKE CONCAT(database(), '/%') GROUP BY space
+) i ON i.name = CONCAT(t.table_schema, '/', t.table_name) or i.name LIKE CONCAT(t.table_schema, '/', t.table_name, '#p#%')
 WHERE t.table_schema = database()
 GROUP BY t.table_name
 `
