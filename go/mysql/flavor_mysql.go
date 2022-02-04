@@ -261,9 +261,7 @@ const TablesWithSize56 = `SELECT table_name, table_type, unix_timestamp(create_t
 // TablesWithSize57 is a query to select table along with size for mysql 5.7.
 // It's a little weird, because the JOIN predicate only works if the table and databases do not contain weird characters.
 // As a fallback, we use the mysql 5.6 query, which is not always up to date, but works for all table/db names.
-const TablesWithSize57 = `
-SELECT
-	t.table_name,
+const TablesWithSize57 = `SELECT t.table_name,
 	t.table_type,
 	UNIX_TIMESTAMP(t.create_time),
 	t.table_comment,
