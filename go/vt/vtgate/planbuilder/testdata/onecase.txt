@@ -1,1 +1,8 @@
 # Add your test case here for debugging and run go test -run=One.
+"SELECT COUNT(*) FROM `issues` INNER JOIN `issues_labels` ON `issues_labels`.`issue_id` = `issues`.`id` INNER JOIN `labels` ON `labels`.`id` = `issues_labels`.`label_id` WHERE `issues`.`repository_id` = 143 AND (issues_labels.label_id = '152')"
+{
+
+}
+{
+
+}

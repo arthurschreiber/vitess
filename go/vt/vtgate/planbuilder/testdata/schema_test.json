@@ -24,6 +24,119 @@
     }]
   },
   "keyspaces": {
+    "deployments": {
+      "sharded": true,
+      "vindexes": {
+        "hash": {
+          "type": "hash"
+        },
+        "deployment_statuses_id_ks_idx": {
+          "type": "lookup_test",
+          "owner": "deployment_statuses"
+        },
+        "deployments_id_ks_idx": {
+          "type": "lookup_test",
+          "owner": "deployments"
+        }
+      },
+      "tables": {
+        "deployment_statuses": {
+          "column_vindexes": [
+            {
+              "column": "repository_id",
+              "name": "hash"
+            },
+            {
+              "column": "id",
+              "name": "deployment_statuses_id_ks_idx"
+            },
+            {
+              "column": "deployment_id",
+              "name": "deployments_id_ks_idx"
+            }
+          ]
+        },
+        "deployments": {
+          "column_vindexes": [
+            {
+              "column": "repository_id",
+              "name": "hash"
+            },
+            {
+              "column": "id",
+              "name": "deployments_id_ks_idx"
+            }
+          ]
+        }
+      }
+    },
+    "issues": {
+      "sharded": true,
+      "vindexes": {
+        "hash": {
+          "type": "hash"
+        },
+        "issues_id_ks_idx": {
+          "type": "lookup_test",
+          "owner": "issues"
+        },
+        "issues_labels_id_ks_idx": {
+          "type": "lookup_test",
+          "owner": "issues_labels"
+        },
+        "labels_id_ks_idx": {
+          "type": "lookup_test",
+          "owner": "labels"
+        }
+      },
+      "tables": {
+        "issues": {
+          "column_vindexes": [
+            {
+              "column": "repository_id",
+              "name": "hash"
+            },
+            {
+              "column": "id",
+              "name": "issues_id_ks_idx"
+            }
+          ]
+        },
+        "issues_labels": {
+          "column_vindexes": [
+            {
+              "column": "repository_id",
+              "name": "hash"
+            },
+            {
+              "column": "id",
+              "name": "issues_labels_id_ks_idx"
+            },
+            {
+              "column": "issue_id",
+              "name": "issues_id_ks_idx"
+            },
+            {
+              "column": "label_id",
+              "name": "labels_id_ks_idx"
+            }
+          ]
+        },
+        "labels": {
+          "column_vindexes": [
+            {
+              "column": "repository_id",
+              "name": "hash"
+            },
+            {
+              "column": "id",
+              "name": "labels_id_ks_idx"
+            }
+          ]
+        }
+      }
+    },
+
     "user": {
       "sharded": true,
       "vindexes": {

@@ -440,6 +440,28 @@ func (r *Route) PickBestAvailableVindex() {
 	}
 }
 
+func (r *Route) GetAllAlternativeVindexes() []*Route {
+	r.PickBestAvailableVindex()
+
+	if r.Selected == nil {
+		return nil
+	}
+
+	var output []*Route
+	for _, v := range r.VindexPreds {
+		option := v.bestOption()
+
+		if option != nil && r.Selected != option {
+			clone := r.Clone().(*Route)
+			clone.Selected = option
+			clone.RouteOpCode = option.OpCode
+			output = append(output, clone)
+		}
+	}
+
+	return output
+}
+
 // canImprove returns true if additional predicates could help improving this plan
 func (r *Route) canImprove() bool {
 	return r.RouteOpCode != engine.None
@@ -676,6 +698,10 @@ func less(c1, c2 Cost) bool {
 	default:
 		return c1.IsUnique
 	}
+}
+
+func same(c1, c2 Cost) bool {
+	return c1.OpCode == c2.OpCode && c1.VindexCost == c2.VindexCost && c1.IsUnique == c2.IsUnique
 }
 
 func (vpp *VindexPlusPredicates) bestOption() *VindexOption {

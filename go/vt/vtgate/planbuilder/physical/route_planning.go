@@ -653,6 +653,31 @@ func tryMerge(
 			if aVdx == bVdx && gen4ValuesEqual(ctx, aExpr, bExpr) {
 				return merger(aRoute, bRoute)
 			}
+
+			for _, jp := range joinPredicates {
+				_, _, predicate, err := BreakExpressionInLHSandRHS(ctx, jp, aRoute.TableID())
+
+				if err != nil {
+					return nil, err
+				}
+
+				bRoute.UpdateRoutingLogic(ctx, predicate)
+			}
+
+			for _, altARoute := range aRoute.GetAllAlternativeVindexes() {
+				aVdx := altARoute.SelectedVindex()
+				aExpr := altARoute.VindexExpressions()
+
+				for _, altBRoute := range bRoute.GetAllAlternativeVindexes() {
+
+				bVdx = altRoute.SelectedVindex()
+				bExpr = altRoute.VindexExpressions()
+
+				if aVdx == bVdx && gen4ValuesEqual(ctx, aExpr, bExpr) {
+					return merger(aRoute, altRoute)
+				}
+			}
+
 			return nil, nil
 		}
 		fallthrough
@@ -678,6 +703,7 @@ func tryMerge(
 		r.PickBestAvailableVindex()
 		return r, nil
 	}
+
 	return nil, nil
 }
 
