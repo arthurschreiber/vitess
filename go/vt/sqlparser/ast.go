@@ -62,6 +62,7 @@ type (
 		SetWith(with *With)
 		MakeDistinct()
 		GetColumnCount() int
+		GetColumnExprs() SelectExprs
 		Commented
 	}
 

@@ -666,6 +666,7 @@ func tryMerge(
 			// no join predicates - no vindex
 			return nil, nil
 		}
+
 		if !sameKeyspace {
 			return nil, vterrors.New(vtrpcpb.Code_UNIMPLEMENTED, "unsupported: cross-shard correlated subquery")
 		}
@@ -793,10 +794,55 @@ func canMergeOnFilter(ctx *plancontext.PlanningContext, a, b *Route, predicate s
 	return rVindex == lVindex
 }
 
+func canMergeSubqueryFilter(ctx *plancontext.PlanningContext, a, b *Route, predicate sqlparser.Expr) bool {
+	comparison, ok := predicate.(*sqlparser.ComparisonExpr)
+	if !ok {
+		return false
+	}
+	if comparison.Operator != sqlparser.EqualOp && comparison.Operator != sqlparser.InOp {
+		return false
+	}
+	left := comparison.Left
+	right := comparison.Right
+
+	lVindex := findColumnVindex(ctx, a, left)
+	if lVindex == nil {
+		left, right = right, left
+		lVindex = findColumnVindex(ctx, a, left)
+	}
+	if lVindex == nil || !lVindex.IsUnique() {
+		return false
+	}
+	rVindex := findColumnVindex(ctx, b, right)
+	if rVindex == nil {
+		return false
+	}
+	return rVindex == lVindex
+}
+
 func findColumnVindex(ctx *plancontext.PlanningContext, a *Route, exp sqlparser.Expr) vindexes.SingleColumn {
 	_, isCol := exp.(*sqlparser.ColName)
 	if !isCol {
-		return nil
+		subquery, isSubquery := exp.(*sqlparser.Subquery)
+		if !isSubquery {
+			return nil
+		}
+
+		if subquery.Select.GetColumnCount() == 1 {
+			columnExpr := subquery.Select.GetColumnExprs()[0]
+
+			aliasedExpr, ok := columnExpr.(*sqlparser.AliasedExpr)
+			if !ok {
+				return nil
+			}
+
+			exp = aliasedExpr.Expr
+
+			_, isCol = exp.(*sqlparser.ColName)
+			if !isCol {
+				return nil
+			}
+		}
 	}
 
 	var singCol vindexes.SingleColumn
