@@ -56,6 +56,7 @@ type (
 		AddOrder(*Order)
 		SetOrderBy(OrderBy)
 		GetOrderBy() OrderBy
+		GetGroupBy() GroupBy
 		SetLimit(*Limit)
 		SetLock(lock Lock)
 		SetInto(into *SelectInto)

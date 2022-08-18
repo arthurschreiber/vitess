@@ -802,6 +802,7 @@ func canMergeSubqueryOnColumnSelection(ctx *plancontext.PlanningContext, a, b *R
 	if comparison.Operator != sqlparser.EqualOp && comparison.Operator != sqlparser.InOp {
 		return false
 	}
+
 	left := comparison.Left
 	right := comparison.Right
 
@@ -814,7 +815,18 @@ func canMergeSubqueryOnColumnSelection(ctx *plancontext.PlanningContext, a, b *R
 		return false
 	}
 
-	rightSelection := extractSingleColumnSubquerySelection(right)
+	subquery, isSubquery := right.(*sqlparser.Subquery)
+	if !isSubquery {
+		return false
+	}
+
+	// TODO: We can merge subqueries with `GROUP BY` if they group by the column that is selected,
+	// but for now we simply skip all subqueries that have a `GROUP BY` statement.
+	if len(subquery.Select.GetGroupBy()) != 0 {
+		return false
+	}
+
+	rightSelection := extractSingleColumnSubquerySelection(subquery)
 	rVindex := findColumnVindex(ctx, b, rightSelection)
 	if rVindex == nil {
 		return false
@@ -822,12 +834,7 @@ func canMergeSubqueryOnColumnSelection(ctx *plancontext.PlanningContext, a, b *R
 	return rVindex == lVindex
 }
 
-func extractSingleColumnSubquerySelection(exp sqlparser.Expr) *sqlparser.ColName {
-	subquery, isSubquery := exp.(*sqlparser.Subquery)
-	if !isSubquery {
-		return nil
-	}
-
+func extractSingleColumnSubquerySelection(subquery *sqlparser.Subquery) *sqlparser.ColName {
 	if subquery.Select.GetColumnCount() != 1 {
 		return nil
 	}
