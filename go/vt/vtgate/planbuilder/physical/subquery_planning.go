@@ -144,27 +144,21 @@ func tryMergeSubQueryOp(
 
 			// If we haven't found a way to merge yet, check if we have a filter condition
 			// on the outer query on a vindex against a matchin vindex column selection on the inner query
-			for _, predicate := range outerOp.SeenPredicates {
-				extractedSubquery, ok := predicate.(*sqlparser.ExtractedSubquery)
-				if ok {
-					if canMergeSubqueryFilter(ctx, outerOp, subqueryRoute, extractedSubquery.Original) {
+			if canMergeSubqueryOnColumnSelection(ctx, outerOp, subqueryRoute, subQueryInner.ExtractedSubquery.Original) {
+				// We want to keep the subquery's route here
+				merged, err := merger(outerOp, subqueryRoute)
 
-						// We want to keep the subquery's route here
-						merged, err := merger(outerOp, subqueryRoute)
+				if err != nil {
+					return nil, err
+				}
 
-						if err != nil {
-							return nil, err
-						}
+				if merged != nil {
+					// Copy Vindex predicates from the inner route to the upper route (probably not right)
+					merged.VindexPreds = append(merged.VindexPreds, subqueryRoute.VindexPreds...)
 
-						if merged != nil {
-							// Copy Vindex predicates from the inner route to the upper route (probably not right)
-							merged.VindexPreds = append(merged.VindexPreds, subqueryRoute.VindexPreds...)
+					merged.PickBestAvailableVindex()
 
-							merged.PickBestAvailableVindex()
-
-							return merged, err
-						}
-					}
+					return merged, err
 				}
 			}
 		}
