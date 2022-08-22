@@ -820,13 +820,39 @@ func canMergeSubqueryOnColumnSelection(ctx *plancontext.PlanningContext, a, b *R
 		return false
 	}
 
-	// TODO: We can merge subqueries with `GROUP BY` if they group by the column that is selected,
-	// but for now we simply skip all subqueries that have a `GROUP BY` statement.
-	if len(subquery.Select.GetGroupBy()) != 0 {
+	groupedOnUniqueVindex := b.RouteOpCode == engine.EqualUnique
+	if !groupedOnUniqueVindex {
+		if len(subquery.Select.GetGroupBy()) > 0 {
+			for _, exp := range subquery.Select.GetGroupBy() {
+				vindex := findColumnVindex(ctx, b, exp)
+				if vindex != nil && vindex.IsUnique() {
+					groupedOnUniqueVindex = true
+					break
+				}
+			}
+
+			// If a subquery has a `GROUP BY` statement,
+			// it can only be merged if one of the expressions refers
+			// to a unique vindex.
+			if !groupedOnUniqueVindex {
+				return false
+			}
+		}
+	}
+
+	// If a subquery has a `LIMIT`/`OFFSET` statement,
+	// it can only be merged if the subquery route is `engine.EqualUnique`
+	if b.RouteOpCode != engine.EqualUnique {
+		if limit := subquery.Select.GetLimit(); limit != nil {
+			return false
+		}
+	}
+
+	rightSelection := extractSingleColumnSubquerySelection(subquery, groupedOnUniqueVindex)
+	if rightSelection == nil {
 		return false
 	}
 
-	rightSelection := extractSingleColumnSubquerySelection(subquery)
 	rVindex := findColumnVindex(ctx, b, rightSelection)
 	if rVindex == nil {
 		return false
@@ -834,7 +860,7 @@ func canMergeSubqueryOnColumnSelection(ctx *plancontext.PlanningContext, a, b *R
 	return rVindex == lVindex
 }
 
-func extractSingleColumnSubquerySelection(subquery *sqlparser.Subquery) *sqlparser.ColName {
+func extractSingleColumnSubquerySelection(subquery *sqlparser.Subquery, groupedOnUniqueVindex bool) *sqlparser.ColName {
 	if subquery.Select.GetColumnCount() != 1 {
 		return nil
 	}
@@ -846,12 +872,22 @@ func extractSingleColumnSubquerySelection(subquery *sqlparser.Subquery) *sqlpars
 		return nil
 	}
 
-	colName, isCol := aliasedExpr.Expr.(*sqlparser.ColName)
-	if !isCol {
-		return nil
+	switch expr := aliasedExpr.Expr.(type) {
+	case *sqlparser.ColName:
+		return expr
+	case *sqlparser.Max:
+		colName, ok := expr.Arg.(*sqlparser.ColName)
+		if ok && groupedOnUniqueVindex {
+			return colName
+		}
+	case *sqlparser.Min:
+		colName, ok := expr.Arg.(*sqlparser.ColName)
+		if ok && groupedOnUniqueVindex {
+			return colName
+		}
 	}
 
-	return colName
+	return nil
 }
 
 func findColumnVindex(ctx *plancontext.PlanningContext, a *Route, exp sqlparser.Expr) vindexes.SingleColumn {

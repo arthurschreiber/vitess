@@ -923,6 +923,10 @@ func (node *Select) SetLimit(limit *Limit) {
 	node.Limit = limit
 }
 
+func (node *Select) GetLimit() *Limit {
+	return node.Limit
+}
+
 // SetLock sets the lock clause
 func (node *Select) SetLock(lock Lock) {
 	node.Lock = lock
@@ -1043,6 +1047,11 @@ func (node *Union) GetGroupBy() GroupBy {
 // SetLimit sets the limit clause
 func (node *Union) SetLimit(limit *Limit) {
 	node.Limit = limit
+}
+
+// GetLimit returns the limit clause
+func (node *Union) GetLimit() *Limit {
+	return node.Limit
 }
 
 // SetLock sets the lock clause

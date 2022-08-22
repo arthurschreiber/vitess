@@ -142,6 +142,40 @@ func tryMergeSubQueryOp(
 				return nil, nil
 			}
 
+			// Special case: Inner query won't return any results / is not routable.
+			if subqueryRoute.RouteOpCode == engine.None {
+				merged, err := merger(outerOp, subqueryRoute)
+
+				if err != nil {
+					return nil, err
+				}
+
+				if merged != nil {
+					// Once a subquery was merged, we need to see if it was part of the outer query's predicates.
+					idx := -1
+					for i, predicate := range merged.SeenPredicates {
+						if sqlparser.EqualsExpr(predicate, subQueryInner.ExtractedSubquery) {
+							idx = i
+						}
+					}
+
+					// If it was, we need to remove it and pull the subquery vindex predicates into the outer query predicates.
+					if idx != -1 {
+						merged.SeenPredicates = append(merged.SeenPredicates[:idx], merged.SeenPredicates[idx+1:]...)
+
+						err := merged.resetRoutingSelections(ctx)
+						if err != nil {
+							return nil, err
+						}
+
+						merged.Selected = nil
+						merged.RouteOpCode = engine.None
+					}
+				}
+
+				return merged, err
+			}
+
 			// Inner subqueries can be merged with the outer subquery as long as long as
 			// the inner query is a single column selection, and that single column has a matching
 			// vindex on the outer query's operand.

@@ -58,6 +58,7 @@ type (
 		GetOrderBy() OrderBy
 		GetGroupBy() GroupBy
 		SetLimit(*Limit)
+		GetLimit() *Limit
 		SetLock(lock Lock)
 		SetInto(into *SelectInto)
 		SetWith(with *With)
