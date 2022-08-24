@@ -136,7 +136,15 @@ func tryMergeSubQueryOp(
 				return merged, err
 			}
 
-			// Get the route for the subquery (could be a derived table)
+			// Peel away any derived table statements first
+			var innerMostQuery sqlparser.SelectStatement
+			derived, isDerived := subq.(*Derived)
+			for isDerived {
+				subq = derived.Source
+				innerMostQuery = derived.Query
+				derived, isDerived = subq.(*Derived)
+			}
+
 			subqueryRoute := makeRoute(subq)
 			if subqueryRoute == nil {
 				return nil, nil
@@ -179,7 +187,7 @@ func tryMergeSubQueryOp(
 			// Inner subqueries can be merged with the outer subquery as long as long as
 			// the inner query is a single column selection, and that single column has a matching
 			// vindex on the outer query's operand.
-			if canMergeSubqueryOnColumnSelection(ctx, outerOp, subqueryRoute, subQueryInner.ExtractedSubquery.Original) {
+			if canMergeSubqueryOnColumnSelection(ctx, outerOp, subqueryRoute, subQueryInner.ExtractedSubquery.Original, innerMostQuery) {
 				merged, err := merger(outerOp, subqueryRoute)
 
 				if err != nil {

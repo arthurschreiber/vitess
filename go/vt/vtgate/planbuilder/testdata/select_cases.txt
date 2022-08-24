@@ -6382,3 +6382,202 @@ Gen4 plan same as above
     "user.music"
   ]
 }
+
+# Mergeable subquery with multiple levels of derived statements
+"SELECT music.id FROM music WHERE music.id IN (SELECT * FROM (SELECT * FROM (SELECT music.id FROM music WHERE music.user_id = 5 LIMIT 10) subquery_for_limit) subquery_for_limit)"
+{
+  "QueryType": "SELECT",
+  "Original": "SELECT music.id FROM music WHERE music.id IN (SELECT * FROM (SELECT * FROM (SELECT music.id FROM music WHERE music.user_id = 5 LIMIT 10) subquery_for_limit) subquery_for_limit)",
+  "Instructions": {
+    "OperatorType": "Subquery",
+    "Variant": "PulloutIn",
+    "PulloutVars": [
+      "__sq_has_values1",
+      "__sq1"
+    ],
+    "Inputs": [
+      {
+        "OperatorType": "Route",
+        "Variant": "EqualUnique",
+        "Keyspace": {
+          "Name": "user",
+          "Sharded": true
+        },
+        "FieldQuery": "select * from (select * from (select music.id from music where 1 != 1) as subquery_for_limit where 1 != 1) as subquery_for_limit where 1 != 1",
+        "Query": "select * from (select * from (select music.id from music where music.user_id = 5 limit 10) as subquery_for_limit) as subquery_for_limit",
+        "Table": "music",
+        "Values": [
+          "INT64(5)"
+        ],
+        "Vindex": "user_index"
+      },
+      {
+        "OperatorType": "Route",
+        "Variant": "IN",
+        "Keyspace": {
+          "Name": "user",
+          "Sharded": true
+        },
+        "FieldQuery": "select music.id from music where 1 != 1",
+        "Query": "select music.id from music where :__sq_has_values1 = 1 and music.id in ::__vals",
+        "Table": "music",
+        "Values": [
+          ":__sq1"
+        ],
+        "Vindex": "music_user_map"
+      }
+    ]
+  }
+}
+{
+  "QueryType": "SELECT",
+  "Original": "SELECT music.id FROM music WHERE music.id IN (SELECT * FROM (SELECT * FROM (SELECT music.id FROM music WHERE music.user_id = 5 LIMIT 10) subquery_for_limit) subquery_for_limit)",
+  "Instructions": {
+    "OperatorType": "Route",
+    "Variant": "EqualUnique",
+    "Keyspace": {
+      "Name": "user",
+      "Sharded": true
+    },
+    "FieldQuery": "select music.id from music where 1 != 1",
+    "Query": "select music.id from music where music.id in (select subquery_for_limit.id from (select subquery_for_limit.id from (select music.id from music where music.user_id = 5 limit 10) as subquery_for_limit) as subquery_for_limit)",
+    "Table": "music",
+    "Values": [
+      "INT64(5)"
+    ],
+    "Vindex": "user_index"
+  },
+  "TablesUsed": [
+    "user.music"
+  ]
+}
+
+# Unmergeable subquery with multiple levels of derived statements
+"SELECT music.id FROM music WHERE music.id IN (SELECT * FROM (SELECT * FROM (SELECT music.id FROM music LIMIT 10) subquery_for_limit) subquery_for_limit)"
+{
+  "QueryType": "SELECT",
+  "Original": "SELECT music.id FROM music WHERE music.id IN (SELECT * FROM (SELECT * FROM (SELECT music.id FROM music LIMIT 10) subquery_for_limit) subquery_for_limit)",
+  "Instructions": {
+    "OperatorType": "Subquery",
+    "Variant": "PulloutIn",
+    "PulloutVars": [
+      "__sq_has_values1",
+      "__sq1"
+    ],
+    "Inputs": [
+      {
+        "OperatorType": "SimpleProjection",
+        "Columns": [
+          0
+        ],
+        "Inputs": [
+          {
+            "OperatorType": "SimpleProjection",
+            "Columns": [
+              0
+            ],
+            "Inputs": [
+              {
+                "OperatorType": "Limit",
+                "Count": "INT64(10)",
+                "Inputs": [
+                  {
+                    "OperatorType": "Route",
+                    "Variant": "Scatter",
+                    "Keyspace": {
+                      "Name": "user",
+                      "Sharded": true
+                    },
+                    "FieldQuery": "select music.id from music where 1 != 1",
+                    "Query": "select music.id from music limit :__upper_limit",
+                    "Table": "music"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "OperatorType": "Route",
+        "Variant": "IN",
+        "Keyspace": {
+          "Name": "user",
+          "Sharded": true
+        },
+        "FieldQuery": "select music.id from music where 1 != 1",
+        "Query": "select music.id from music where :__sq_has_values1 = 1 and music.id in ::__vals",
+        "Table": "music",
+        "Values": [
+          ":__sq1"
+        ],
+        "Vindex": "music_user_map"
+      }
+    ]
+  }
+}
+{
+  "QueryType": "SELECT",
+  "Original": "SELECT music.id FROM music WHERE music.id IN (SELECT * FROM (SELECT * FROM (SELECT music.id FROM music LIMIT 10) subquery_for_limit) subquery_for_limit)",
+  "Instructions": {
+    "OperatorType": "Subquery",
+    "Variant": "PulloutIn",
+    "PulloutVars": [
+      "__sq_has_values1",
+      "__sq1"
+    ],
+    "Inputs": [
+      {
+        "OperatorType": "SimpleProjection",
+        "Columns": [
+          0
+        ],
+        "Inputs": [
+          {
+            "OperatorType": "SimpleProjection",
+            "Columns": [
+              0
+            ],
+            "Inputs": [
+              {
+                "OperatorType": "Limit",
+                "Count": "INT64(10)",
+                "Inputs": [
+                  {
+                    "OperatorType": "Route",
+                    "Variant": "Scatter",
+                    "Keyspace": {
+                      "Name": "user",
+                      "Sharded": true
+                    },
+                    "FieldQuery": "select music.id from music where 1 != 1",
+                    "Query": "select music.id from music limit :__upper_limit",
+                    "Table": "music"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "OperatorType": "Route",
+        "Variant": "IN",
+        "Keyspace": {
+          "Name": "user",
+          "Sharded": true
+        },
+        "FieldQuery": "select music.id from music where 1 != 1",
+        "Query": "select music.id from music where :__sq_has_values1 = 1 and music.id in ::__vals",
+        "Table": "music",
+        "Values": [
+          ":__sq1"
+        ],
+        "Vindex": "music_user_map"
+      }
+    ]
+  },
+  "TablesUsed": [
+    "user.music"
+  ]
+}

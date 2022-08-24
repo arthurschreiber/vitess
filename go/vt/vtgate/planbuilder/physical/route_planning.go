@@ -795,7 +795,7 @@ func canMergeOnFilter(ctx *plancontext.PlanningContext, a, b *Route, predicate s
 	return rVindex == lVindex
 }
 
-func canMergeSubqueryOnColumnSelection(ctx *plancontext.PlanningContext, a, b *Route, predicate sqlparser.Expr) bool {
+func canMergeSubqueryOnColumnSelection(ctx *plancontext.PlanningContext, a, b *Route, predicate sqlparser.Expr, innerMostQuery sqlparser.SelectStatement) bool {
 	comparison, ok := predicate.(*sqlparser.ComparisonExpr)
 	if !ok {
 		return false
@@ -821,10 +821,14 @@ func canMergeSubqueryOnColumnSelection(ctx *plancontext.PlanningContext, a, b *R
 		return false
 	}
 
+	if innerMostQuery == nil {
+		innerMostQuery = subquery.Select
+	}
+
 	groupedOnUniqueVindex := b.RouteOpCode == engine.EqualUnique
 	if !groupedOnUniqueVindex {
-		if len(subquery.Select.GetGroupBy()) > 0 {
-			for _, exp := range subquery.Select.GetGroupBy() {
+		if len(innerMostQuery.GetGroupBy()) > 0 {
+			for _, exp := range innerMostQuery.GetGroupBy() {
 				vindex := findColumnVindex(ctx, b, exp)
 				if vindex != nil && vindex.IsUnique() {
 					groupedOnUniqueVindex = true
@@ -844,7 +848,7 @@ func canMergeSubqueryOnColumnSelection(ctx *plancontext.PlanningContext, a, b *R
 	// If a subquery has a `LIMIT`/`OFFSET` statement,
 	// it can only be merged if the subquery route is `engine.EqualUnique`
 	if b.RouteOpCode != engine.EqualUnique {
-		if limit := subquery.Select.GetLimit(); limit != nil {
+		if limit := innerMostQuery.GetLimit(); limit != nil {
 			return false
 		}
 	}
