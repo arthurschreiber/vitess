@@ -5542,12 +5542,11 @@ Gen4 plan same as above
     "user.user"
   ]
 }
-
-# Subquery with `IN` condition using columns with matching lookup vindexes
-"SELECT music.id FROM music WHERE music.id IN (SELECT music.id FROM music WHERE music.user_id IN (1, 2, 3)) and music.user_id = 5"
+# Treating single value tuples as `EqualUnique` routes
+"SELECT music.id FROM music WHERE music.id IN (SELECT music.id FROM music WHERE music.user_id IN (5)) AND music.user_id = 5"
 {
   "QueryType": "SELECT",
-  "Original": "SELECT music.id FROM music WHERE music.id IN (SELECT music.id FROM music WHERE music.user_id IN (1, 2, 3)) and music.user_id = 5",
+  "Original": "SELECT music.id FROM music WHERE music.id IN (SELECT music.id FROM music WHERE music.user_id IN (5)) AND music.user_id = 5",
   "Instructions": {
     "OperatorType": "Subquery",
     "Variant": "PulloutIn",
@@ -5567,7 +5566,7 @@ Gen4 plan same as above
         "Query": "select music.id from music where music.user_id in ::__vals",
         "Table": "music",
         "Values": [
-          "(INT64(1), INT64(2), INT64(3))"
+          "(INT64(5))"
         ],
         "Vindex": "user_index"
       },
@@ -5591,7 +5590,7 @@ Gen4 plan same as above
 }
 {
   "QueryType": "SELECT",
-  "Original": "SELECT music.id FROM music WHERE music.id IN (SELECT music.id FROM music WHERE music.user_id IN (1, 2, 3)) and music.user_id = 5",
+  "Original": "SELECT music.id FROM music WHERE music.id IN (SELECT music.id FROM music WHERE music.user_id IN (5)) AND music.user_id = 5",
   "Instructions": {
     "OperatorType": "Route",
     "Variant": "EqualUnique",
@@ -5600,7 +5599,7 @@ Gen4 plan same as above
       "Sharded": true
     },
     "FieldQuery": "select music.id from music where 1 != 1",
-    "Query": "select music.id from music where music.id in (select music.id from music where music.user_id in (1, 2, 3)) and music.user_id = 5",
+    "Query": "select music.id from music where music.id in (select music.id from music where music.user_id in (5)) and music.user_id = 5",
     "Table": "music",
     "Values": [
       "INT64(5)"
