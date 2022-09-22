@@ -94,30 +94,36 @@ func (j *Join) PushPredicate(expr sqlparser.Expr, semTable *semantics.SemTable) 
 //
 // This is based on the paper "Canonical Abstraction for Outerjoin Optimization" by J Rao et al
 func (j *Join) tryConvertToInnerJoin(expr sqlparser.Expr, semTable *semantics.SemTable) {
-	if !j.LeftJoin {
-		return
+	if j.LeftJoin && j.isNullIntolerant(expr, semTable) {
+		j.LeftJoin = false
 	}
+}
 
+func (j *Join) isNullIntolerant(expr sqlparser.Expr, semTable *semantics.SemTable) bool {
 	switch expr := expr.(type) {
+	case *sqlparser.AndExpr:
+		return j.isNullIntolerant(expr.Left, semTable) || j.isNullIntolerant(expr.Right, semTable)
+
+	case *sqlparser.OrExpr:
+		return j.isNullIntolerant(expr.Left, semTable) && j.isNullIntolerant(expr.Right, semTable)
+
 	case *sqlparser.ComparisonExpr:
 		if expr.Operator == sqlparser.NullSafeEqualOp {
-			return
+			return false
 		}
 
-		if sqlparser.IsColName(expr.Left) && semTable.RecursiveDeps(expr.Left).IsSolvedBy(j.RHS.TableID()) ||
-			sqlparser.IsColName(expr.Right) && semTable.RecursiveDeps(expr.Right).IsSolvedBy(j.RHS.TableID()) {
-			j.LeftJoin = false
-		}
+		return sqlparser.IsColName(expr.Left) && semTable.RecursiveDeps(expr.Left).IsSolvedBy(j.RHS.TableID()) ||
+			sqlparser.IsColName(expr.Right) && semTable.RecursiveDeps(expr.Right).IsSolvedBy(j.RHS.TableID())
 
 	case *sqlparser.IsExpr:
 		if expr.Right != sqlparser.IsNotNullOp {
-			return
+			return false
 		}
 
-		if sqlparser.IsColName(expr.Left) && semTable.RecursiveDeps(expr.Left).IsSolvedBy(j.RHS.TableID()) {
-			j.LeftJoin = false
-		}
+		return sqlparser.IsColName(expr.Left) && semTable.RecursiveDeps(expr.Left).IsSolvedBy(j.RHS.TableID())
 	}
+
+	return false
 }
 
 // TableID implements the Operator interface
