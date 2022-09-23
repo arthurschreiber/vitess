@@ -57,6 +57,9 @@ func start(t *testing.T) (utils.MySQLCompare, func()) {
 }
 
 func TestDbNameOverride(t *testing.T) {
+	if clusterInstance.HasPartialKeyspaces {
+		t.Skip("test can randomly select one of the shards, and the shards are in different keyspaces")
+	}
 	mcmp, closer := start(t)
 	defer closer()
 
@@ -68,6 +71,9 @@ func TestDbNameOverride(t *testing.T) {
 }
 
 func TestInformationSchemaQuery(t *testing.T) {
+	if clusterInstance.HasPartialKeyspaces {
+		t.Skip("test can randomly select one of the shards, and the shards are in different keyspaces")
+	}
 	mcmp, closer := start(t)
 	defer closer()
 
@@ -106,7 +112,9 @@ func TestFKConstraintUsingInformationSchema(t *testing.T) {
 	defer closer()
 
 	query := "select  fk.referenced_table_name as to_table, fk.referenced_column_name as primary_key, fk.column_name as `column`, fk.constraint_name as name, rc.update_rule as on_update, rc.delete_rule as on_delete from information_schema.referential_constraints as rc join information_schema.key_column_usage as fk on fk.constraint_schema = rc.constraint_schema and fk.constraint_name = rc.constraint_name where fk.referenced_column_name is not null and fk.table_schema = database() and fk.table_name = 't7_fk' and rc.constraint_schema = database() and rc.table_name = 't7_fk'"
-	mcmp.AssertMatches(query, `[[VARCHAR("t7_xxhash") VARCHAR("uid") VARCHAR("t7_uid") VARCHAR("t7_fk_ibfk_1") VARCHAR("CASCADE") VARCHAR("SET NULL")]]`)
+	mcmp.AssertMatchesAny(query,
+		`[[VARBINARY("t7_xxhash") VARCHAR("uid") VARCHAR("t7_uid") VARCHAR("t7_fk_ibfk_1") BINARY("CASCADE") BINARY("SET NULL")]]`,
+		`[[VARCHAR("t7_xxhash") VARCHAR("uid") VARCHAR("t7_uid") VARCHAR("t7_fk_ibfk_1") VARCHAR("CASCADE") VARCHAR("SET NULL")]]`)
 }
 
 func TestConnectWithSystemSchema(t *testing.T) {
@@ -138,6 +146,9 @@ func TestUseSystemSchema(t *testing.T) {
 }
 
 func TestSystemSchemaQueryWithoutQualifier(t *testing.T) {
+	if clusterInstance.HasPartialKeyspaces {
+		t.Skip("partial keyspace detected, skipping test")
+	}
 	mcmp, closer := start(t)
 	defer closer()
 
@@ -171,6 +182,9 @@ func TestSystemSchemaQueryWithoutQualifier(t *testing.T) {
 }
 
 func TestMultipleSchemaPredicates(t *testing.T) {
+	if clusterInstance.HasPartialKeyspaces {
+		t.Skip("test can randomly select one of the shards, and the shards are in different keyspaces")
+	}
 	mcmp, closer := start(t)
 	defer closer()
 

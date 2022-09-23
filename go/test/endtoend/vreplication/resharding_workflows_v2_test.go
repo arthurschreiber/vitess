@@ -18,9 +18,11 @@ package vreplication
 
 import (
 	"fmt"
+	"net"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,25 +64,24 @@ func createReshardWorkflow(t *testing.T, sourceShards, targetShards string) erro
 	err := tstWorkflowExec(t, defaultCellName, workflowName, targetKs, targetKs,
 		"", workflowActionCreate, "", sourceShards, targetShards)
 	require.NoError(t, err)
-	time.Sleep(1 * time.Second)
+	waitForWorkflowState(t, vc, ksWorkflow, workflowStateRunning)
 	catchup(t, targetTab1, workflowName, "Reshard")
 	catchup(t, targetTab2, workflowName, "Reshard")
 	vdiff1(t, ksWorkflow, "")
 	return nil
 }
 
-func createMoveTablesWorkflow(t *testing.T, tables string) error {
+func createMoveTablesWorkflow(t *testing.T, tables string) {
 	if tables == "" {
 		tables = tablesToMove
 	}
 	err := tstWorkflowExec(t, defaultCellName, workflowName, sourceKs, targetKs,
 		tables, workflowActionCreate, "", "", "")
 	require.NoError(t, err)
+	waitForWorkflowState(t, vc, ksWorkflow, workflowStateRunning)
 	catchup(t, targetTab1, workflowName, "MoveTables")
 	catchup(t, targetTab2, workflowName, "MoveTables")
-	time.Sleep(1 * time.Second)
 	vdiff1(t, ksWorkflow, "")
-	return nil
 }
 
 func tstWorkflowAction(t *testing.T, action, tabletTypes, cells string) error {
@@ -105,6 +106,9 @@ func tstWorkflowExec(t *testing.T, cells, workflow, sourceKs, targetKs, tables, 
 	case workflowActionCreate:
 		if currentWorkflowType == wrangler.MoveTablesWorkflow {
 			args = append(args, "--source", sourceKs, "--tables", tables)
+			if sourceShards != "" {
+				args = append(args, "--source_shards", sourceShards)
+			}
 		} else {
 			args = append(args, "--source_shards", sourceShards, "--target_shards", targetShards)
 		}
@@ -123,7 +127,6 @@ func tstWorkflowExec(t *testing.T, cells, workflow, sourceKs, targetKs, tables, 
 		return fmt.Errorf("%s: %s", err, output)
 	}
 	return nil
-
 }
 
 func tstWorkflowSwitchReads(t *testing.T, tabletTypes, cells string) {
@@ -256,45 +259,172 @@ func TestBasicV2Workflows(t *testing.T) {
 	log.Flush()
 }
 
-const workflowStartTimeout = 5 * time.Second
+// TestPartialMoveTables tests partial move tables by moving just one shard
+// 80- from customer to customer2.
+func TestPartialMoveTables(t *testing.T) {
+	defaultRdonly = 1
+	origExtraVTGateArgs := extraVTGateArgs
+	// We need to enable shard routing for partial movetables routing.
+	// And we need to disable schema change tracking in vtgate as we want
+	// to test query routing using a query we know will fail as it's
+	// using a column that doesn't exist in the schema -- this way we
+	// get the target shard details back in the error message. If schema
+	// tracking is enabled then vtgate will produce an error about the
+	// unknown symbol before attempting to route the query.
+	extraVTGateArgs = append(extraVTGateArgs, []string{
+		"--enable_partial_keyspace_migration",
+		"--schema_change_signal=false",
+	}...)
+	defer func() {
+		extraVTGateArgs = origExtraVTGateArgs
+	}()
+	vc = setupCluster(t)
+	defer vtgateConn.Close()
+	defer vc.TearDown(t)
+	setupCustomerKeyspace(t)
 
-func waitForWorkflowToStart(t *testing.T, ksWorkflow string) {
-	done := false
-	ticker := time.NewTicker(100 * time.Millisecond)
-	timer := time.NewTimer(workflowStartTimeout)
-	log.Infof("Waiting for workflow %s to start", ksWorkflow)
-	for {
-		select {
-		case <-ticker.C:
-			if done {
-				log.Infof("Workflow %s has started", ksWorkflow)
-				return
-			}
-			output, err := vc.VtctlClient.ExecuteCommandWithOutput("Workflow", ksWorkflow, "show")
-			require.NoError(t, err)
-			done = true
-			state := ""
-			result := gjson.Get(output, "ShardStatuses")
-			result.ForEach(func(tabletId, tabletStreams gjson.Result) bool { // for each participating tablet
-				tabletStreams.ForEach(func(streamId, streamInfos gjson.Result) bool { // for each stream
-					if streamId.String() == "PrimaryReplicationStatuses" {
-						streamInfos.ForEach(func(attributeKey, attributeValue gjson.Result) bool { // for each attribute in the stream
-							state = attributeValue.Get("State").String()
-							if state != "Running" {
-								done = false // we need to wait for all streams to start
-							}
-							return true
-						})
-					}
-					return true
-				})
-				return true
-			})
+	// Move customer table from unsharded product keyspace to
+	// sharded customer keyspace.
+	createMoveTablesWorkflow(t, "customer")
+	tstWorkflowSwitchReadsAndWrites(t)
+	tstWorkflowComplete(t)
 
-		case <-timer.C:
-			require.FailNowf(t, "workflow %s not yet started", ksWorkflow)
+	// Now setup the customer2 keyspace so we can do a partial
+	// move tables for one of the two shards: 80-.
+	defaultRdonly = 0
+	setupCustomer2Keyspace(t)
+	currentWorkflowType = wrangler.MoveTablesWorkflow
+	wfName := "partial"
+	moveToKs := "customer2"
+	shard := "80-"
+	ksWf := fmt.Sprintf("%s.%s", moveToKs, wfName)
+	err := tstWorkflowExec(t, defaultCellName, wfName, targetKs, moveToKs,
+		"customer", workflowActionCreate, "", shard, "")
+	require.NoError(t, err)
+	targetTab1 = vc.getPrimaryTablet(t, moveToKs, shard)
+	catchup(t, targetTab1, wfName, "Partial MoveTables Customer to Customer2")
+	vdiff1(t, ksWf, "")
+
+	waitForRowCount(t, vtgateConn, "customer", "customer", 3)      // customer: all shards
+	waitForRowCount(t, vtgateConn, "customer2", "customer", 3)     // customer: all shards
+	waitForRowCount(t, vtgateConn, "customer2:80-", "customer", 2) // customer2: 80-
+
+	// Remove any manually applied shard routing rules as these
+	// should be set by SwitchTraffic.
+	emptyRules := `{"rules":[]}`
+	applyShardRoutingRules(t, emptyRules)
+	require.Equal(t, emptyRules, getShardRoutingRules(t))
+
+	// switch all traffic
+	require.NoError(t, tstWorkflowExec(t, "", wfName, "", moveToKs, "", workflowActionSwitchTraffic, "", "", ""))
+	expectedSwitchOutput := fmt.Sprintf("SwitchTraffic was successful for workflow customer2.partial\nStart State: Reads Not Switched. Writes Not Switched\nCurrent State: Reads partially switched, for shards: %s. Writes partially switched, for shards: %s\n\n",
+		shard, shard)
+	require.Equal(t, expectedSwitchOutput, lastOutput)
+
+	// Confirm global routing rules -- everything should still be routed
+	// to the source side, customer, globally.
+	output, err := vc.VtctlClient.ExecuteCommandWithOutput("GetRoutingRules")
+	require.NoError(t, err)
+	result := gjson.Get(output, "rules")
+	result.ForEach(func(attributeKey, attributeValue gjson.Result) bool {
+		// 0 is the keyspace and 1 is optional tablename[@tablettype]
+		fromKsTbl := strings.Split(attributeValue.Get("fromTable").String(), ".")
+		// 0 is the keyspace and 1 is the tablename
+		toKsTbl := strings.Split(attributeValue.Get("toTables.0").String(), ".")
+		// All tables in the customer and customer2 keyspaces should be
+		// routed to the customer keyspace.
+		if fromKsTbl[0] == "customer" || fromKsTbl[0] == "customer2" {
+			require.Equal(t, "customer", toKsTbl[0])
 		}
-	}
+		return true
+	})
+	// Confirm shard routing rules -- all traffic for the 80- shard should be
+	// routed into the customer2 keyspace, overriding the global routing rules.
+	expectedShardRoutingRules := `{"rules":[{"from_keyspace":"customer","to_keyspace":"customer2","shard":"80-"}]}`
+	require.Equal(t, expectedShardRoutingRules, getShardRoutingRules(t))
+
+	// This query uses an ID that should always get routed to customer2:80-
+	targetRoutedQuery := "select name from customer where cid = 1 and noexistcol = 'foo'"
+	// This query uses an ID that should always get routed to customer:-80
+	sourceRoutedQuery := "select name from customer where cid = 2 and noexistcol = 'foo'"
+
+	// reset any existing vtgate connection state
+	vtgateConn.Close()
+	vtgateConn = getConnection(t, vc.ClusterConfig.hostname, vc.ClusterConfig.vtgateMySQLPort)
+	defer vtgateConn.Close()
+
+	// No shard targeting
+	_, err = vtgateConn.ExecuteFetch(targetRoutedQuery, 0, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "target: customer2.80-.primary")
+	_, err = vtgateConn.ExecuteFetch(sourceRoutedQuery, 0, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "target: customer.-80.primary")
+
+	// Shard targeting
+	_, err = vtgateConn.ExecuteFetch("use `customer2:80-`", 0, false)
+	require.NoError(t, err)
+	_, err = vtgateConn.ExecuteFetch(targetRoutedQuery, 0, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "target: customer2.80-.primary")
+	_, err = vtgateConn.ExecuteFetch("use `customer:80-`", 0, false)
+	require.NoError(t, err)
+	_, err = vtgateConn.ExecuteFetch(targetRoutedQuery, 0, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "target: customer2.80-.primary")
+
+	// Tablet type targeting
+	_, err = vtgateConn.ExecuteFetch("use `customer2@replica`", 0, false)
+	require.NoError(t, err)
+	_, err = vtgateConn.ExecuteFetch(targetRoutedQuery, 0, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "target: customer2.80-.replica")
+	_, err = vtgateConn.ExecuteFetch(sourceRoutedQuery, 0, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "target: customer.-80.replica")
+	_, err = vtgateConn.ExecuteFetch("use `customer@replica`", 0, false)
+	require.NoError(t, err)
+	_, err = vtgateConn.ExecuteFetch(targetRoutedQuery, 0, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "target: customer2.80-.replica")
+	_, err = vtgateConn.ExecuteFetch(sourceRoutedQuery, 0, false)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "target: customer.-80.replica")
+
+	// We cannot Complete a partial move tables at the moment because it will
+	// find that all traffic has (obviously) not been switched we need to
+	// cleanup using Workflow delete.
+	err = tstWorkflowExec(t, "", wfName, "", moveToKs, "", workflowActionComplete, "", "", "")
+	require.Error(t, err)
+	require.Equal(t, expectedShardRoutingRules, getShardRoutingRules(t))
+	_, err = vc.VtctlClient.ExecuteCommandWithOutput("Workflow", ksWf, "delete")
+	require.NoError(t, err)
+	output, err = vc.VtctlClient.ExecuteCommandWithOutput("Workflow", ksWf, "show")
+	require.Error(t, err)
+	require.Contains(t, output, "no streams found")
+
+}
+
+func getVtctldGRPCURL() string {
+	return net.JoinHostPort("localhost", strconv.Itoa(vc.Vtctld.GrpcPort))
+}
+
+func applyShardRoutingRules(t *testing.T, rules string) {
+	output, err := osExec(t, "vtctldclient", []string{"--server", getVtctldGRPCURL(), "ApplyShardRoutingRules", "--rules", rules})
+	log.Infof("ApplyShardRoutingRules err: %+v, output: %+v", err, output)
+	require.NoError(t, err, output)
+	require.NotNil(t, output)
+}
+
+func getShardRoutingRules(t *testing.T) string {
+	output, err := osExec(t, "vtctldclient", []string{"--server", getVtctldGRPCURL(), "GetShardRoutingRules"})
+	log.Infof("GetShardRoutingRules err: %+v, output: %+v", err, output)
+	require.Nilf(t, err, output)
+	require.NotNil(t, output)
+	re := regexp.MustCompile(`[\n\s]+`)
+	output = re.ReplaceAllString(output, "")
+	output = strings.TrimSpace(output)
+	return output
 }
 
 /*
@@ -310,7 +440,7 @@ func testVSchemaForSequenceAfterMoveTables(t *testing.T) {
 		"customer2", workflowActionCreate, "", "", "")
 	require.NoError(t, err)
 
-	waitForWorkflowToStart(t, "customer.wf2")
+	waitForWorkflowState(t, vc, "customer.wf2", workflowStateRunning)
 	waitForLowLag(t, "customer", "wf2")
 
 	err = tstWorkflowExec(t, defaultCellName, "wf2", sourceKs, targetKs,
@@ -324,7 +454,7 @@ func testVSchemaForSequenceAfterMoveTables(t *testing.T) {
 	output, err := vc.VtctlClient.ExecuteCommandWithOutput("GetVSchema", "product")
 	require.NoError(t, err)
 	assert.NotContains(t, output, "customer2\"", "customer2 still found in keyspace product")
-	validateCount(t, vtgateConn, "customer", "customer2", 3)
+	waitForRowCount(t, vtgateConn, "customer", "customer2", 3)
 
 	// check that customer2 has the sequence tag
 	output, err = vc.VtctlClient.ExecuteCommandWithOutput("GetVSchema", "customer")
@@ -336,15 +466,15 @@ func testVSchemaForSequenceAfterMoveTables(t *testing.T) {
 	for i := 0; i < num; i++ {
 		execVtgateQuery(t, vtgateConn, "customer", "insert into customer2(name) values('a')")
 	}
-	validateCount(t, vtgateConn, "customer", "customer2", 3+num)
+	waitForRowCount(t, vtgateConn, "customer", "customer2", 3+num)
 	want := fmt.Sprintf("[[INT32(%d)]]", 100+num-1)
-	validateQuery(t, vtgateConn, "customer", "select max(cid) from customer2", want)
+	waitForQueryResult(t, vtgateConn, "customer", "select max(cid) from customer2", want)
 
 	// use MoveTables to move customer2 back to product. Note that now the table has an associated sequence
 	err = tstWorkflowExec(t, defaultCellName, "wf3", targetKs, sourceKs,
 		"customer2", workflowActionCreate, "", "", "")
 	require.NoError(t, err)
-	waitForWorkflowToStart(t, "product.wf3")
+	waitForWorkflowState(t, vc, "product.wf3", workflowStateRunning)
 
 	waitForLowLag(t, "product", "wf3")
 	err = tstWorkflowExec(t, defaultCellName, "wf3", targetKs, sourceKs,
@@ -368,9 +498,9 @@ func testVSchemaForSequenceAfterMoveTables(t *testing.T) {
 	for i := 0; i < num; i++ {
 		execVtgateQuery(t, vtgateConn, "product", "insert into customer2(name) values('a')")
 	}
-	validateCount(t, vtgateConn, "product", "customer2", 3+num+num)
+	waitForRowCount(t, vtgateConn, "product", "customer2", 3+num+num)
 	want = fmt.Sprintf("[[INT32(%d)]]", 100+num+num-1)
-	validateQuery(t, vtgateConn, "product", "select max(cid) from customer2", want)
+	waitForQueryResult(t, vtgateConn, "product", "select max(cid) from customer2", want)
 }
 
 // testReplicatingWithPKEnumCols ensures that we properly apply binlog events
@@ -387,11 +517,11 @@ func testReplicatingWithPKEnumCols(t *testing.T) {
 	// typ is an enum, with soho having a stored and binlogged value of 2
 	deleteQuery := "delete from customer where cid = 2 and typ = 'soho'"
 	insertQuery := "insert into customer(cid, name, typ, sport, meta) values(2, 'Paül','soho','cricket',convert(x'7b7d' using utf8mb4))"
-	execVtgateQuery(t, vtgateConn, "product", deleteQuery)
-	time.Sleep(2 * time.Second)
+	execVtgateQuery(t, vtgateConn, sourceKs, deleteQuery)
+	waitForNoWorkflowLag(t, vc, targetKs, workflowName)
 	vdiff1(t, ksWorkflow, "")
-	execVtgateQuery(t, vtgateConn, "product", insertQuery)
-	time.Sleep(2 * time.Second)
+	execVtgateQuery(t, vtgateConn, sourceKs, insertQuery)
+	waitForNoWorkflowLag(t, vc, targetKs, workflowName)
 	vdiff1(t, ksWorkflow, "")
 }
 
@@ -638,6 +768,30 @@ func setupCustomerKeyspace(t *testing.T) {
 	targetTab2 = custKs.Shards["80-"].Tablets["zone1-300"].Vttablet
 	targetReplicaTab1 = custKs.Shards["-80"].Tablets["zone1-201"].Vttablet
 	targetRdonlyTab1 = custKs.Shards["-80"].Tablets["zone1-202"].Vttablet
+}
+
+func setupCustomer2Keyspace(t *testing.T) {
+	c2shards := []string{"-80", "80-"}
+	c2keyspace := "customer2"
+	if _, err := vc.AddKeyspace(t, []*Cell{vc.Cells["zone1"]}, c2keyspace, strings.Join(c2shards, ","),
+		customerVSchema, customerSchema, defaultReplicas, defaultRdonly, 1200, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, c2shard := range c2shards {
+		if err := vtgate.WaitForStatusOfTabletInShard(fmt.Sprintf("%s.%s.primary", c2keyspace, c2shard), 1); err != nil {
+			t.Fatal(err)
+		}
+		if defaultReplicas > 0 {
+			if err := vtgate.WaitForStatusOfTabletInShard(fmt.Sprintf("%s.%s.replica", c2keyspace, c2shard), defaultReplicas); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if defaultRdonly > 0 {
+			if err := vtgate.WaitForStatusOfTabletInShard(fmt.Sprintf("%s.%s.rdonly", c2keyspace, c2shard), defaultRdonly); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 }
 
 func TestSwitchReadsWritesInAnyOrder(t *testing.T) {

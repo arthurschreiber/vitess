@@ -19,9 +19,9 @@ package vreplication
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -81,10 +81,6 @@ func init() {
 
 	withDDLInitialQueries = append(withDDLInitialQueries, binlogplayer.WithDDLInitialQueries...)
 }
-
-// this are the default tablet_types that will be used by the tablet picker to find sources for a vreplication stream
-// it can be overridden by passing a different list to the MoveTables or Reshard commands
-var tabletTypesStr = flag.String("vreplication_tablet_type", "in_order:REPLICA,PRIMARY", "comma separated list of tablet types used as a source")
 
 // waitRetryTime can be changed to a smaller value for tests.
 // A VReplication stream can be created by sending an insert statement
@@ -262,7 +258,7 @@ func (vre *Engine) retry(ctx context.Context, err error) {
 
 func (vre *Engine) initControllers(rows []map[string]string) {
 	for _, row := range rows {
-		ct, err := newController(vre.ctx, row, vre.dbClientFactoryFiltered, vre.mysqld, vre.ts, vre.cell, *tabletTypesStr, nil, vre)
+		ct, err := newController(vre.ctx, row, vre.dbClientFactoryFiltered, vre.mysqld, vre.ts, vre.cell, tabletTypesStr, nil, vre)
 		if err != nil {
 			log.Errorf("Controller could not be initialized for stream: %v", row)
 			continue
@@ -390,7 +386,7 @@ func (vre *Engine) exec(query string, runAsAdmin bool) (*sqltypes.Result, error)
 			if err != nil {
 				return nil, err
 			}
-			ct, err := newController(vre.ctx, params, vre.dbClientFactoryFiltered, vre.mysqld, vre.ts, vre.cell, *tabletTypesStr, nil, vre)
+			ct, err := newController(vre.ctx, params, vre.dbClientFactoryFiltered, vre.mysqld, vre.ts, vre.cell, tabletTypesStr, nil, vre)
 			if err != nil {
 				return nil, err
 			}
@@ -432,7 +428,7 @@ func (vre *Engine) exec(query string, runAsAdmin bool) (*sqltypes.Result, error)
 			}
 			// Create a new controller in place of the old one.
 			// For continuity, the new controller inherits the previous stats.
-			ct, err := newController(vre.ctx, params, vre.dbClientFactoryFiltered, vre.mysqld, vre.ts, vre.cell, *tabletTypesStr, blpStats[id], vre)
+			ct, err := newController(vre.ctx, params, vre.dbClientFactoryFiltered, vre.mysqld, vre.ts, vre.cell, tabletTypesStr, blpStats[id], vre)
 			if err != nil {
 				return nil, err
 			}
@@ -643,8 +639,11 @@ func (vre *Engine) transitionJournal(je *journalEvent) {
 		sgtid := je.shardGTIDs[shard]
 		bls := proto.Clone(vre.controllers[refid].source).(*binlogdatapb.BinlogSource)
 		bls.Keyspace, bls.Shard = sgtid.Keyspace, sgtid.Shard
+
+		workflowType, _ := strconv.ParseInt(params["workflow_type"], 10, 64)
+		workflowSubType, _ := strconv.ParseInt(params["workflow_sub_type"], 10, 64)
 		ig := NewInsertGenerator(binlogplayer.BlpRunning, vre.dbName)
-		ig.AddRow(params["workflow"], bls, sgtid.Gtid, params["cell"], params["tablet_types"])
+		ig.AddRow(params["workflow"], bls, sgtid.Gtid, params["cell"], params["tablet_types"], workflowType, workflowSubType)
 		qr, err := withDDL.Exec(vre.ctx, ig.String(), dbClient.ExecuteFetch, dbClient.ExecuteFetch)
 		if err != nil {
 			log.Errorf("transitionJournal: %v", err)
@@ -679,7 +678,7 @@ func (vre *Engine) transitionJournal(je *journalEvent) {
 			log.Errorf("transitionJournal: %v", err)
 			return
 		}
-		ct, err := newController(vre.ctx, params, vre.dbClientFactoryFiltered, vre.mysqld, vre.ts, vre.cell, *tabletTypesStr, nil, vre)
+		ct, err := newController(vre.ctx, params, vre.dbClientFactoryFiltered, vre.mysqld, vre.ts, vre.cell, tabletTypesStr, nil, vre)
 		if err != nil {
 			log.Errorf("transitionJournal: %v", err)
 			return
