@@ -113,52 +113,17 @@ func optimizeDerived(ctx *plancontext.PlanningContext, op *abstract.Derived) (ab
 	if innerRoute.RouteOpCode == engine.EqualUnique {
 		// no need to check anything if we are sure that we will only hit a single shard
 	} else {
-		if op.Sel.GetLimit() != nil {
-			// we can't merge if we have a LIMIT or OFFSET - we need to get all the results and check the limits
-			// before we can move the results to the outer query
-			return buildDerivedOp(op, opInner), nil
+		validVindexF := func(expr sqlparser.Expr) bool {
+			sc := findColumnVindex(ctx, derived, expr)
+			return sc != nil && sc.IsUnique()
 		}
-
-		sel, isSel := op.Sel.(*sqlparser.Select)
-		if !isSel {
-			// TODO: not sure what to do if the outer subquery is an UNION. need more thinking
+		if !op.IsMergeable(validVindexF) {
 			return buildDerivedOp(op, opInner), nil
-		}
-
-		if !isGroupByOK(ctx, sel.GroupBy, derived) {
-			return buildDerivedOp(op, opInner), nil
-		}
-
-		if len(sel.GroupBy) == 0 {
-			// if we have grouping, we have already checked that it's safe, and don't need to check for aggregations
-			// but if we don't have groupings, we need to check if there are aggregations that will mess with us
-			for _, expr := range sel.SelectExprs {
-				if sqlparser.ContainsAggregation(expr) {
-					return buildDerivedOp(op, opInner), nil
-				}
-			}
 		}
 	}
 
 	innerRoute.Source = derived
 	return innerRoute, nil
-}
-
-func isGroupByOK(ctx *plancontext.PlanningContext, gb sqlparser.GroupBy, derived *Derived) bool {
-	if len(gb) == 0 {
-		return true
-	}
-
-	// iff we are grouping, we need to check that we can perform the grouping inside a single shard, and we check that
-	// by checking that one of the grouping expressions used is a unique single column vindex.
-	// TODO: we could also support the case where all the columns of a multi-column vindex are used in the grouping
-	for _, expr := range gb {
-		sc := findColumnVindex(ctx, derived, expr)
-		if sc.IsUnique() {
-			return true
-		}
-	}
-	return false
 }
 
 func buildDerivedOp(op *abstract.Derived, opInner abstract.PhysicalOperator) *Derived {
@@ -171,15 +136,35 @@ func buildDerivedOp(op *abstract.Derived, opInner abstract.PhysicalOperator) *De
 }
 
 func optimizeJoin(ctx *plancontext.PlanningContext, op *abstract.Join) (abstract.PhysicalOperator, error) {
-	opInner, err := CreatePhysicalOperator(ctx, op.LHS)
+	lhs, err := CreatePhysicalOperator(ctx, op.LHS)
 	if err != nil {
 		return nil, err
 	}
-	opOuter, err := CreatePhysicalOperator(ctx, op.RHS)
+	rhs, err := CreatePhysicalOperator(ctx, op.RHS)
 	if err != nil {
 		return nil, err
 	}
-	return mergeOrJoin(ctx, opInner, opOuter, sqlparser.SplitAndExpression(nil, op.Predicate), !op.LeftJoin)
+
+	if needToSwitchSides(op.RHS) {
+		if op.LeftJoin {
+			return nil, vterrors.Errorf(vtrpcpb.Code_UNIMPLEMENTED, "derived table with limit not supported on the right hand side of ")
+		}
+		if needToSwitchSides(op.LHS) {
+			return nil, vterrors.Errorf(vtrpcpb.Code_UNIMPLEMENTED, "can't switch sides ")
+		}
+		lhs, rhs = rhs, lhs
+	}
+
+	return mergeOrJoin(ctx, lhs, rhs, sqlparser.SplitAndExpression(nil, op.Predicate), !op.LeftJoin)
+}
+
+func safeOnTheRHS(op abstract.LogicalOperator) bool {
+	dt, ok := op.(*abstract.Derived)
+	if ok && dt.Sel.GetLimit() != nil {
+		return true
+	}
+
+	return false
 }
 
 func optimizeQueryGraph(ctx *plancontext.PlanningContext, op *abstract.QueryGraph) (abstract.PhysicalOperator, error) {

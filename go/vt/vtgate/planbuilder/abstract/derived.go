@@ -73,3 +73,36 @@ func (d *Derived) CheckValid() error {
 func (d *Derived) Compact(*semantics.SemTable) (LogicalOperator, error) {
 	return d, nil
 }
+
+func (d *Derived) IsMergeable(validVindex func(expr sqlparser.Expr) bool) bool {
+	if d.Sel.GetLimit() != nil {
+		return false
+	}
+
+	sel, ok := d.Sel.(*sqlparser.Select)
+	if !ok {
+		return false
+	}
+
+	if len(sel.GroupBy) > 0 {
+		// iff we are grouping, we need to check that we can perform the grouping inside a single shard, and we check that
+		// by checking that one of the grouping expressions used is a unique single column vindex.
+		// TODO: we could also support the case where all the columns of a multi-column vindex are used in the grouping
+		for _, gb := range sel.GroupBy {
+			if validVindex(gb) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// if we have grouping, we have already checked that it's safe, and don't need to check for aggregations
+	// but if we don't have groupings, we need to check if there are aggregations that will mess with us
+	for _, expr := range sel.SelectExprs {
+		if sqlparser.ContainsAggregation(expr) {
+			return false
+		}
+	}
+
+	return true
+}

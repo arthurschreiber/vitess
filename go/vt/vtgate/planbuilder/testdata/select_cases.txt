@@ -7887,3 +7887,251 @@ Gen4 plan same as above
     "user.music"
   ]
 }
+
+# limit on the vtgate has to be executed on the LHS of a join
+"select id from user join (select user_id from user_extra limit 10) ue on user.id = ue.user_id"
+"unsupported: filtering on results of cross-shard subquery"
+{
+  "QueryType": "SELECT",
+  "Original": "select id from user join (select user_id from user_extra limit 10) ue on user.id = ue.user_id",
+  "Instructions": {
+    "OperatorType": "Join",
+    "Variant": "Join",
+    "JoinColumnIndexes": "R:0",
+    "JoinVars": {
+      "ue_user_id": 0
+    },
+    "TableName": "user_extra_`user`",
+    "Inputs": [
+      {
+        "OperatorType": "SimpleProjection",
+        "Columns": [
+          0
+        ],
+        "Inputs": [
+          {
+            "OperatorType": "Limit",
+            "Count": "INT64(10)",
+            "Inputs": [
+              {
+                "OperatorType": "Route",
+                "Variant": "Scatter",
+                "Keyspace": {
+                  "Name": "user",
+                  "Sharded": true
+                },
+                "FieldQuery": "select user_id from user_extra where 1 != 1",
+                "Query": "select user_id from user_extra limit :__upper_limit",
+                "Table": "user_extra"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "OperatorType": "Route",
+        "Variant": "EqualUnique",
+        "Keyspace": {
+          "Name": "user",
+          "Sharded": true
+        },
+        "FieldQuery": "select id from `user` where 1 != 1",
+        "Query": "select id from `user` where `user`.id = :ue_user_id",
+        "Table": "`user`",
+        "Values": [
+          ":ue_user_id"
+        ],
+        "Vindex": "user_index"
+      }
+    ]
+  },
+  "TablesUsed": [
+    "user.user",
+    "user.user_extra"
+  ]
+}
+
+"select user.a, t.b from user join (select id, count(*) b, req from user_extra group by req, id) as t on user.id = t.id"
+"unsupported: filtering on results of cross-shard subquery"
+{
+  "QueryType": "SELECT",
+  "Original": "select user.a, t.b from user join (select id, count(*) b, req from user_extra group by req, id) as t on user.id = t.id",
+  "Instructions": {
+    "OperatorType": "Join",
+    "Variant": "Join",
+    "JoinColumnIndexes": "L:1,R:0",
+    "JoinVars": {
+      "user_id": 0
+    },
+    "TableName": "`user`_user_extra",
+    "Inputs": [
+      {
+        "OperatorType": "Route",
+        "Variant": "Scatter",
+        "Keyspace": {
+          "Name": "user",
+          "Sharded": true
+        },
+        "FieldQuery": "select `user`.id, `user`.a from `user` where 1 != 1",
+        "Query": "select `user`.id, `user`.a from `user`",
+        "Table": "`user`"
+      },
+      {
+        "OperatorType": "SimpleProjection",
+        "Columns": [
+          1
+        ],
+        "Inputs": [
+          {
+            "OperatorType": "Aggregate",
+            "Variant": "Ordered",
+            "Aggregates": "sum_count_star(1) AS b",
+            "GroupBy": "(0|3), (2|4)",
+            "Inputs": [
+              {
+                "OperatorType": "Route",
+                "Variant": "Scatter",
+                "Keyspace": {
+                  "Name": "user",
+                  "Sharded": true
+                },
+                "FieldQuery": "select id, count(*) as b, req, weight_string(id), weight_string(req) from user_extra where 1 != 1 group by id, weight_string(id), req, weight_string(req)",
+                "OrderBy": "(0|3) ASC, (2|4) ASC",
+                "Query": "select id, count(*) as b, req, weight_string(id), weight_string(req) from user_extra where id = :user_id group by id, weight_string(id), req, weight_string(req) order by id asc, req asc",
+                "Table": "user_extra"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "TablesUsed": [
+    "user.user",
+    "user.user_extra"
+  ]
+}
+
+"select id from user left join (select user_id from user_extra limit 10) ue on user.id = ue.user_id"
+{
+  "QueryType": "SELECT",
+  "Original": "select id from user left join (select user_id from user_extra limit 10) ue on user.id = ue.user_id",
+  "Instructions": {
+    "OperatorType": "Join",
+    "Variant": "LeftJoin",
+    "JoinColumnIndexes": "R:0",
+    "JoinVars": {
+      "ue_user_id": 0
+    },
+    "TableName": "user_extra_`user`",
+    "Inputs": [
+      {
+        "OperatorType": "SimpleProjection",
+        "Columns": [
+          0
+        ],
+        "Inputs": [
+          {
+            "OperatorType": "Limit",
+            "Count": "INT64(10)",
+            "Inputs": [
+              {
+                "OperatorType": "Route",
+                "Variant": "Scatter",
+                "Keyspace": {
+                  "Name": "user",
+                  "Sharded": true
+                },
+                "FieldQuery": "select user_id from user_extra where 1 != 1",
+                "Query": "select user_id from user_extra limit :__upper_limit",
+                "Table": "user_extra"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "OperatorType": "Route",
+        "Variant": "EqualUnique",
+        "Keyspace": {
+          "Name": "user",
+          "Sharded": true
+        },
+        "FieldQuery": "select id from `user` where 1 != 1",
+        "Query": "select id from `user` where `user`.id = :ue_user_id",
+        "Table": "`user`",
+        "Values": [
+          ":ue_user_id"
+        ],
+        "Vindex": "user_index"
+      }
+    ]
+  },
+  "TablesUsed": [
+    "user.user",
+    "user.user_extra"
+  ]
+}
+Gen4 plan same as above
+
+"select id from (select id from user limit 10) u join (select user_id from user_extra limit 10) ue on u.id = ue.user_id"
+"unsupported: filtering on results of cross-shard subquery"
+{
+  "QueryType": "SELECT",
+  "Original": "select id from (select id from user limit 10) u join (select user_id from user_extra limit 10) ue on u.id = ue.user_id",
+  "Instructions": {
+    "OperatorType": "Join",
+    "Variant": "Join",
+    "JoinColumnIndexes": "R:0",
+    "JoinVars": {
+      "ue_user_id": 0
+    },
+    "TableName": "user_extra_`user`",
+    "Inputs": [
+      {
+        "OperatorType": "SimpleProjection",
+        "Columns": [
+          0
+        ],
+        "Inputs": [
+          {
+            "OperatorType": "Limit",
+            "Count": "INT64(10)",
+            "Inputs": [
+              {
+                "OperatorType": "Route",
+                "Variant": "Scatter",
+                "Keyspace": {
+                  "Name": "user",
+                  "Sharded": true
+                },
+                "FieldQuery": "select user_id from user_extra where 1 != 1",
+                "Query": "select user_id from user_extra limit :__upper_limit",
+                "Table": "user_extra"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "OperatorType": "Route",
+        "Variant": "EqualUnique",
+        "Keyspace": {
+          "Name": "user",
+          "Sharded": true
+        },
+        "FieldQuery": "select id from (select id from `user` where 1 != 1) as u where 1 != 1",
+        "Query": "select id from (select id from `user` where id = :ue_user_id limit 10) as u",
+        "Table": "`user`",
+        "Values": [
+          ":ue_user_id"
+        ],
+        "Vindex": "user_index"
+      }
+    ]
+  },
+  "TablesUsed": [
+    "user.user",
+    "user.user_extra"
+  ]
+}
