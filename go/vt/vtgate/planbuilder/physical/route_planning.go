@@ -112,14 +112,8 @@ func optimizeDerived(ctx *plancontext.PlanningContext, op *abstract.Derived) (ab
 
 	if innerRoute.RouteOpCode == engine.EqualUnique {
 		// no need to check anything if we are sure that we will only hit a single shard
-	} else {
-		validVindexF := func(expr sqlparser.Expr) bool {
-			sc := findColumnVindex(ctx, derived, expr)
-			return sc != nil && sc.IsUnique()
-		}
-		if !op.IsMergeable(validVindexF) {
-			return buildDerivedOp(op, opInner), nil
-		}
+	} else if !derived.IsMergeable(ctx) {
+		return buildDerivedOp(op, opInner), nil
 	}
 
 	innerRoute.Source = derived
@@ -143,16 +137,6 @@ func optimizeJoin(ctx *plancontext.PlanningContext, op *abstract.Join) (abstract
 	rhs, err := CreatePhysicalOperator(ctx, op.RHS)
 	if err != nil {
 		return nil, err
-	}
-
-	if needToSwitchSides(op.RHS) {
-		if op.LeftJoin {
-			return nil, vterrors.Errorf(vtrpcpb.Code_UNIMPLEMENTED, "derived table with limit not supported on the right hand side of ")
-		}
-		if needToSwitchSides(op.LHS) {
-			return nil, vterrors.Errorf(vtrpcpb.Code_UNIMPLEMENTED, "can't switch sides ")
-		}
-		lhs, rhs = rhs, lhs
 	}
 
 	return mergeOrJoin(ctx, lhs, rhs, sqlparser.SplitAndExpression(nil, op.Predicate), !op.LeftJoin)
@@ -664,8 +648,25 @@ func getJoinFor(ctx *plancontext.PlanningContext, cm opCacheMap, lhs, rhs abstra
 	return join, nil
 }
 
-func mergeOrJoin(ctx *plancontext.PlanningContext, lhs, rhs abstract.PhysicalOperator, joinPredicates []sqlparser.Expr, inner bool) (abstract.PhysicalOperator, error) {
+func requiresSwitchingSides(ctx *plancontext.PlanningContext, op abstract.PhysicalOperator) bool {
+	required := false
 
+	VisitOperators(op, func(current abstract.PhysicalOperator) (bool, error) {
+		derived, isDerived := current.(*Derived)
+
+		if isDerived && !derived.IsMergeable(ctx) {
+			required = true
+
+			return false, nil
+		}
+
+		return true, nil
+	})
+
+	return required
+}
+
+func mergeOrJoin(ctx *plancontext.PlanningContext, lhs, rhs abstract.PhysicalOperator, joinPredicates []sqlparser.Expr, inner bool) (abstract.PhysicalOperator, error) {
 	merger := func(a, b *Route) (*Route, error) {
 		return createRouteOperatorForJoin(a, b, joinPredicates, inner)
 	}
@@ -673,6 +674,25 @@ func mergeOrJoin(ctx *plancontext.PlanningContext, lhs, rhs abstract.PhysicalOpe
 	newPlan, _ := tryMerge(ctx, lhs, rhs, joinPredicates, merger)
 	if newPlan != nil {
 		return newPlan, nil
+	}
+
+	if len(joinPredicates) > 0 && requiresSwitchingSides(ctx, rhs) {
+		if !inner {
+			return nil, vterrors.Errorf(vtrpcpb.Code_UNIMPLEMENTED, "unsupported: LEFT JOIN not supported for derived tables")
+		}
+
+		if requiresSwitchingSides(ctx, lhs) {
+			return nil, vterrors.Errorf(vtrpcpb.Code_UNIMPLEMENTED, "unsupported: JOIN not supported between derived tables")
+		}
+
+		join := &ApplyJoin{
+			LHS:      rhs.Clone(),
+			RHS:      lhs.Clone(),
+			Vars:     map[string]int{},
+			LeftJoin: !inner,
+		}
+
+		return pushJoinPredicates(ctx, joinPredicates, join)
 	}
 
 	join := &ApplyJoin{
