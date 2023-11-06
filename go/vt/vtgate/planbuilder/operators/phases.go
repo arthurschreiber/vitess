@@ -129,28 +129,16 @@ func addOrderingForAllAggregations(ctx *plancontext.PlanningContext, root ops.Op
 			return in, rewrite.SameTree, nil
 		}
 
-		var res *rewrite.ApplyResult
-
 		requireOrdering, err := needsOrdering(ctx, aggrOp)
 		if err != nil {
 			return nil, nil, err
 		}
 
+		var res *rewrite.ApplyResult
 		if requireOrdering {
 			addOrderingFor(aggrOp)
 			res = rewrite.NewTree("added ordering before aggregation", in)
 		}
-
-		if needAvgBreaking(aggrOp.Aggregations) {
-			return splitAvgAggregations()
-		}
-
-		for _, aggr := range aggrOp.Aggregations {
-			if aggr.OpCode == opcode.AggregateAvg {
-
-			}
-		}
-
 		return in, res, nil
 	}
 
@@ -166,9 +154,54 @@ func needAvgBreaking(aggrs []Aggr) bool {
 	return false
 }
 
-func splitAvgAggregations() {
+func splitAvgAggregations(ctx *plancontext.PlanningContext, aggr *Aggregator) (ops.Operator, error) {
+	proj := newAliasedProjection(aggr)
 
+	columns := []*sqlparser.AliasedExpr{}
+	aggregations := []Aggr{}
+
+	for offset, col := range aggr.Columns {
+		if avg, ok := col.Expr.(*sqlparser.Avg); ok {
+			sumExpr := &sqlparser.Sum{
+				Arg: avg.Arg,
+			}
+			countExpr := &sqlparser.Count{
+				Args: []sqlparser.Expr{avg.Arg},
+			}
+			countExprAlias := aeWrap(countExpr)
+
+			col.Expr = sumExpr
+
+			proj.addColumnWithoutPushing(ctx, aeWrap(sumExpr), false /* addToGroupBy */)
+			proj.addColumnWithoutPushing(ctx, countExprAlias, false /* addToGroupBy */)
+
+			for aggrOffset, aggregation := range aggr.Aggregations {
+				aggr.Aggregations[aggrOffset].OpCode = opcode.AggregateSum
+
+				if offset == aggregation.ColOffset {
+					aggregations = append(aggregations, NewAggr(opcode.AggregateCount, countExpr, countExprAlias, "foobar"))
+					columns = append(columns, countExprAlias)
+				}
+			}
+		} else {
+			proj.addColumnWithoutPushing(ctx, col, false /* addToGroupBy */)
+		}
+	}
+
+	aggr.Columns = append(aggr.Columns, columns...)
+	aggr.Aggregations = append(aggr.Aggregations, aggregations...)
+
+	return proj, nil
 }
+
+// "SELECT (SUM(col) / COUNT(col))"
+
+// "SELECT AVG(col) as `AVG(col)`, COUNT(*) "
+// "SELECT AVG(count) as aliasCol "
+
+// "SELECT (SUM(col) / COUNT(col)) as `AVG(COUNT)` "
+
+// "SELECT SUM(col), (`SUM(col)` / `COUNT(col)`) as `AVG(COUNT)`, COUNT(col)"
 
 func addOrderingFor(aggrOp *Aggregator) {
 	orderBys := slice.Map(aggrOp.Grouping, func(from GroupBy) ops.OrderBy {

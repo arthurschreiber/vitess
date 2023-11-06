@@ -34,6 +34,19 @@ func tryPushAggregator(ctx *plancontext.PlanningContext, aggregator *Aggregator)
 	if aggregator.Pushed {
 		return aggregator, rewrite.SameTree, nil
 	}
+
+	if reachedPhase(ctx, delegateAggregation) {
+		if needAvgBreaking(aggregator.Aggregations) {
+			output, err = splitAvgAggregations(ctx, aggregator)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			applyResult = rewrite.NewTree("split avg aggregation", output)
+			return
+		}
+	}
+
 	switch src := aggregator.Source.(type) {
 	case *Route:
 		// if we have a single sharded route, we can push it down
