@@ -19,6 +19,7 @@ package operators
 import (
 	"vitess.io/vitess/go/slice"
 	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/vtgate/engine/opcode"
 	"vitess.io/vitess/go/vt/vtgate/planbuilder/operators/ops"
 	"vitess.io/vitess/go/vt/vtgate/planbuilder/operators/rewrite"
 	"vitess.io/vitess/go/vt/vtgate/planbuilder/plancontext"
@@ -140,10 +141,33 @@ func addOrderingForAllAggregations(ctx *plancontext.PlanningContext, root ops.Op
 			res = rewrite.NewTree("added ordering before aggregation", in)
 		}
 
+		if needAvgBreaking(aggrOp.Aggregations) {
+			return splitAvgAggregations()
+		}
+
+		for _, aggr := range aggrOp.Aggregations {
+			if aggr.OpCode == opcode.AggregateAvg {
+
+			}
+		}
+
 		return in, res, nil
 	}
 
 	return rewrite.BottomUp(root, TableID, visitor, stopAtRoute)
+}
+
+func needAvgBreaking(aggrs []Aggr) bool {
+	for _, aggr := range aggrs {
+		if aggr.OpCode == opcode.AggregateAvg {
+			return true
+		}
+	}
+	return false
+}
+
+func splitAvgAggregations() {
+
 }
 
 func addOrderingFor(aggrOp *Aggregator) {
