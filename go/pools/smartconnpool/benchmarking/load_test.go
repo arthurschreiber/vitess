@@ -307,6 +307,42 @@ func (b *Benchmark) SmartConnPool(capacity int) {
 	})
 }
 
+func (b *Benchmark) FastConnPool(capacity int) {
+	connect := func(ctx context.Context) (*BenchConn, error) {
+		conn := &BenchConn{latency: b.latency}
+
+		b.mu.Lock()
+		b.connstats = append(b.connstats, &conn.Stats)
+		b.mu.Unlock()
+
+		return conn, nil
+	}
+
+	pool := smartconnpool.NewFastPool(&smartconnpool.Config[*BenchConn]{
+		Capacity: int64(capacity),
+	}).Open(connect, nil)
+
+	perform := func(ctx context.Context, setting *smartconnpool.Setting, delay time.Duration) {
+		conn, err := pool.Get(context.Background(), setting)
+		if err != nil {
+			panic(err)
+		}
+
+		conn.Conn.Stats.Requests++
+		time.Sleep(delay)
+		conn.Recycle()
+	}
+
+	b.run(perform)
+	b.serialize("fast", &InternalStatistics{
+		Capacity:   capacity,
+		WaitCount:  pool.Metrics.WaitCount(),
+		WaitTime:   pool.Metrics.WaitTime(),
+		DiffCount:  pool.Metrics.DiffSettingCount(),
+		ResetCount: pool.Metrics.ResetSettingCount(),
+	})
+}
+
 type TraceOptions struct {
 	RequestsPerSecond int
 	DecayRate         float64
@@ -380,7 +416,7 @@ func (opt *TraceOptions) Generate() Trace {
 }
 
 func TestPoolPerformance(t *testing.T) {
-	t.Skipf("skipping load tests...")
+	//	t.Skipf("skipping load tests...")
 
 	t.Run("Contended", func(t *testing.T) {
 		opt := TraceOptions{
@@ -394,6 +430,7 @@ func TestPoolPerformance(t *testing.T) {
 		bench := NewBenchmark(t, "contended", &opt)
 		bench.ResourcePool(8)
 		bench.SmartConnPool(8)
+		bench.FastConnPool(8)
 	})
 
 	t.Run("Uncontended", func(t *testing.T) {
@@ -406,11 +443,13 @@ func TestPoolPerformance(t *testing.T) {
 		}
 
 		bench := NewBenchmark(t, "uncontended", &opt)
-		bench.ResourcePool(16)
-		bench.SmartConnPool(16)
+		// bench.ResourcePool(16)
+		// bench.SmartConnPool(16)
+		bench.FastConnPool(16)
 	})
 
 	t.Run("Uncontended Without Settings", func(t *testing.T) {
+
 		opt := TraceOptions{
 			RequestsPerSecond: 20,
 			DecayRate:         0.01,
@@ -420,8 +459,9 @@ func TestPoolPerformance(t *testing.T) {
 		}
 
 		bench := NewBenchmark(t, "uncontended_no_settings", &opt)
-		bench.ResourcePool(16)
-		bench.SmartConnPool(16)
+		// bench.ResourcePool(16)
+		// bench.SmartConnPool(16)
+		bench.FastConnPool(16)
 	})
 
 	t.Run("Points", func(t *testing.T) {

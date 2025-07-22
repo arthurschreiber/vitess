@@ -693,10 +693,10 @@ func (pool *ConnPool[C]) getWithSetting(ctx context.Context, setting *Setting) (
 	// ensure that the setting applied to the connection matches the one we want
 	connSetting := conn.Conn.Setting()
 	if connSetting != setting {
+		pool.Metrics.diffSetting.Add(1)
+
 		// if there's another setting applied, reset it before applying our setting
 		if connSetting != nil {
-			pool.Metrics.diffSetting.Add(1)
-
 			err = conn.Conn.ResetSetting(ctx)
 			if err != nil {
 				conn.Close()

@@ -2,7 +2,7 @@ package smartconnpool
 
 import (
 	"context"
-	"runtime"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,7 +40,8 @@ type FastPool[C Connection] struct {
 	wait waitlist[C]
 
 	// addConnectionChan is a channel to signal that a new connection should be opened
-	addConnectionChan chan struct{}
+	addConnectionChan  chan struct{}
+	requestSettingChan chan *Setting
 
 	Metrics Metrics
 	Name    string
@@ -59,6 +60,7 @@ func NewFastPool[C Connection](config *Config[C]) *FastPool[C] {
 	pool.connections.Store(&connections)
 
 	pool.addConnectionChan = make(chan struct{}, pool.config.maxCapacity)
+	pool.requestSettingChan = make(chan *Setting, 1)
 	pool.capacity.Store(pool.config.maxCapacity)
 
 	pool.wait.init()
@@ -182,7 +184,7 @@ func (pool *FastPool[C]) add(conn *Pooled[C]) {
 		}
 
 		conn.state.Store(NOT_IN_USE)
-		runtime.Gosched()
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
@@ -214,7 +216,7 @@ func (pool *FastPool[C]) put(conn *Pooled[C]) {
 		conn.state.Store(NOT_IN_USE)
 
 		// Allow other goroutines to run
-		runtime.Gosched()
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
@@ -246,9 +248,11 @@ func (pool *FastPool[C]) borrow(ctx context.Context, setting *Setting) (*Pooled[
 
 	// See if we have any matching, unused connections in the pool
 	connections := *pool.connections.Load()
+	inUseCount := 0
 	for _, conn := range connections {
 		if conn.Conn.Setting() != setting {
 			// If the connection's setting doesn't match the requested setting, skip it
+			fmt.Println("Skipping connection with different setting:", conn.Conn.Setting(), "vs", setting)
 			continue
 		}
 
@@ -263,41 +267,45 @@ func (pool *FastPool[C]) borrow(ctx context.Context, setting *Setting) (*Pooled[
 			// We successfully borrowed this connection, so we can return it
 			conn.timeUsed.set(monotonicNow())
 			return conn, nil
+		} else {
+			inUseCount++
 		}
 	}
 
-	// If we didn't find a matching connection, try to grab ANY idle connection
-	// and change its setting. This prevents waiting forever when all connections
-	// are idle but have different settings.
-	connections = *pool.connections.Load()
-	for _, conn := range connections {
-		if conn.state.CompareAndSwap(NOT_IN_USE, IN_USE) {
-			// We got a connection! Now check if we need to change its setting
-			if conn.Conn.Setting() != setting {
-				pool.Metrics.diffSetting.Add(1)
+	if inUseCount == 0 {
+		// If we didn't find a matching connection, try to grab ANY idle connection
+		// and change its setting. This prevents waiting forever when all connections
+		// are idle but have different settings.
+		connections = *pool.connections.Load()
+		for _, conn := range connections {
+			if conn.state.CompareAndSwap(NOT_IN_USE, IN_USE) {
+				// We got a connection! Now check if we need to change its setting
+				if conn.Conn.Setting() != setting {
+					pool.Metrics.diffSetting.Add(1)
 
-				// Reset the current setting if needed
-				if conn.Conn.Setting() != nil {
-					err := conn.Conn.ResetSetting(ctx)
+					// Reset the current setting if needed
+					if conn.Conn.Setting() != nil {
+						err := conn.Conn.ResetSetting(ctx)
+						if err != nil {
+							// If we couldn't reset the setting, close the connection
+							pool.closeConnection(conn)
+							continue
+						}
+					}
+
+					// Apply the new setting
+					err := conn.Conn.ApplySetting(ctx, setting)
 					if err != nil {
-						// If we couldn't reset the setting, close the connection
+						// If we couldn't apply the setting, close the connection
 						pool.closeConnection(conn)
 						continue
 					}
 				}
 
-				// Apply the new setting
-				err := conn.Conn.ApplySetting(ctx, setting)
-				if err != nil {
-					// If we couldn't apply the setting, close the connection
-					pool.closeConnection(conn)
-					continue
-				}
+				// Successfully borrowed and configured the connection
+				conn.timeUsed.set(monotonicNow())
+				return conn, nil
 			}
-
-			// Successfully borrowed and configured the connection
-			conn.timeUsed.set(monotonicNow())
-			return conn, nil
 		}
 	}
 
@@ -312,14 +320,16 @@ func (pool *FastPool[C]) borrow(ctx context.Context, setting *Setting) (*Pooled[
 		}
 	}
 
-	start := time.Now()
-
 	for {
+		start := time.Now()
+
 		// Wait for a connection to become available
 		conn, err := pool.wait.waitForConn(ctx, setting, pool.closed.Load)
 		if err != nil {
 			return nil, err
 		}
+
+		pool.recordWait(start)
 
 		// Verify that no one has stolen the connection from us
 		// We successfully borrowed this connection, so we can return it
@@ -330,6 +340,8 @@ func (pool *FastPool[C]) borrow(ctx context.Context, setting *Setting) (*Pooled[
 		// If the connection's setting is nil, we can skip this step.
 		if conn.Conn.Setting() != setting {
 			pool.Metrics.diffSetting.Add(1)
+
+			fmt.Println("Applying setting to connection", conn.Conn.Setting(), "->", setting)
 
 			// TODO: Reset setting
 			if conn.Conn.Setting() != nil {
@@ -352,8 +364,6 @@ func (pool *FastPool[C]) borrow(ctx context.Context, setting *Setting) (*Pooled[
 				continue
 			}
 		}
-
-		pool.recordWait(start)
 
 		return conn, nil
 
