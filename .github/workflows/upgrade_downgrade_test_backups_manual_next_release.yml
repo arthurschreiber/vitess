@@ -106,7 +106,7 @@ jobs:
         echo mysql-apt-config mysql-apt-config/select-server select mysql-8.0 | sudo debconf-set-selections
         sudo DEBIAN_FRONTEND="noninteractive" dpkg -i mysql-apt-config*
         sudo apt-get update
-        sudo DEBIAN_FRONTEND="noninteractive" apt-get install -y mysql-server mysql-client
+        sudo DEBIAN_FRONTEND="noninteractive" apt-get install -y mysql-server=8.0.42-1ubuntu24.04 mysql-client=8.0.42-1ubuntu24.04
 
         # Install everything else we need, and configure
         sudo apt-get install -y make unzip g++ etcd-client etcd-server curl git wget eatmydata grep
