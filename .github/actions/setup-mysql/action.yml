@@ -8,6 +8,7 @@ runs:
   using: "composite"
   steps:
     - name: Setup MySQL
+      shell: bash
       run: |
         export DEBIAN_FRONTEND="noninteractive"
         sudo apt-get update
