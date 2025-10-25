@@ -82,6 +82,7 @@ jobs:
         sudo dpkg-reconfigure man-db
 
     - uses: ./.github/actions/setup-mysql
+      if: steps.changes.outputs.unit_tests == 'true'
       with:
         flavor: mysql-8.4
         

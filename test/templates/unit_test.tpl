@@ -87,6 +87,7 @@ jobs:
         sudo dpkg-reconfigure man-db
 
     - uses: ./.github/actions/setup-mysql
+      if: steps.changes.outputs.unit_tests == 'true'
       with:
         {{ if (eq .Platform "mysql57") -}}
         flavor: mysql-5.7
