@@ -86,8 +86,9 @@ jobs:
         echo "set man-db/auto-update false" | sudo debconf-communicate
         sudo dpkg-reconfigure man-db
 
-    - uses: ./.github/actions/setup-mysql
+    - name: Setup MySQL
       if: steps.changes.outputs.unit_tests == 'true'
+      uses: ./.github/actions/setup-mysql
       with:
         {{ if (eq .Platform "mysql57") -}}
         flavor: mysql-5.7
