@@ -95,6 +95,7 @@ jobs:
       if: steps.changes.outputs.end_to_end == 'true'
       run: |
         sudo apt-get -qq update
+
         # Install everything else we need, and configure
         sudo apt-get -qq install -y make unzip g++ etcd-client etcd-server curl git wget eatmydata xz-utils libncurses6
 
