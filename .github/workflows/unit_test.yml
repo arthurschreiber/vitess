@@ -86,7 +86,7 @@ jobs:
       if: steps.changes.outputs.unit_tests == 'true'
       uses: ./.github/actions/setup-mysql
       with:
-        flavor: mysql-5.7
+        flavor: ${{ matrix.flavor }}
         
     - name: Get dependencies
       if: steps.changes.outputs.unit_tests == 'true'
