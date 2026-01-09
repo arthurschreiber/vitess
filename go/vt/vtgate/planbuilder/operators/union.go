@@ -23,6 +23,7 @@ import (
 	"vitess.io/vitess/go/slice"
 	"vitess.io/vitess/go/vt/sqlparser"
 	"vitess.io/vitess/go/vt/vterrors"
+	"vitess.io/vitess/go/vt/vtgate/planbuilder/operators/predicates"
 	"vitess.io/vitess/go/vt/vtgate/planbuilder/plancontext"
 )
 
@@ -93,6 +94,15 @@ The first SELECT of the union dictates the column names, and the second is whate
 can be found on the same offset. The names of the RHS are discarded.
 */
 func (u *Union) AddPredicate(ctx *plancontext.PlanningContext, expr sqlparser.Expr) Operator {
+	// If we have a JoinPredicate, unwrap it to get the actual expression.
+	// We need to do this because predicatePerSource will rewrite the expression
+	// differently for each source, and we can't have multiple sources sharing
+	// the same JoinPredicate ID with different expressions in the tracker.
+	jp, isJP := expr.(*predicates.JoinPredicate)
+	if isJP {
+		expr = jp.Current()
+	}
+
 	offsets := make(map[string]int)
 	sel := u.GetSelectFor(0)
 	for i, selectExpr := range sel.GetColumns() {
@@ -105,11 +115,19 @@ func (u *Union) AddPredicate(ctx *plancontext.PlanningContext, expr sqlparser.Ex
 
 	needsFilter, exprPerSource := u.predicatePerSource(expr, offsets)
 	if needsFilter {
+		if isJP {
+			ctx.PredTracker.Skip(jp.ID)
+		}
 		return newFilter(u, expr)
 	}
 
 	for i, src := range u.Sources {
 		u.Sources[i] = src.AddPredicate(ctx, exprPerSource[i])
+	}
+
+	// Skip the JoinPredicate since it's been fully consumed.
+	if isJP {
+		ctx.PredTracker.Skip(jp.ID)
 	}
 
 	return u
