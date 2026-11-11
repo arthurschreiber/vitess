@@ -18,14 +18,20 @@ package topo_test
 
 import (
 	"context"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 	"vitess.io/vitess/go/vt/topo"
 	"vitess.io/vitess/go/vt/topo/memorytopo"
+	"vitess.io/vitess/go/vt/vterrors"
 )
 
 // blockingFactory creates connections like memorytopo, except that a
@@ -121,4 +127,105 @@ func TestConnForCellWaitForSameCellHonorsContext(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		require.Fail(t, "ConnForCell(zone2) did not give up when its context ended")
 	}
+}
+
+// TestConnForCellCloseDoesNotWaitForConnect checks that Close returns while a
+// connection to a cell is still being created, and that the connection is
+// then closed rather than cached.
+func TestConnForCellCloseDoesNotWaitForConnect(t *testing.T) {
+	ts, bf := newBlockingTopo(t)
+
+	connected := make(chan error, 1)
+	go func() {
+		_, err := ts.ConnForCell(t.Context(), "zone2")
+		connected <- err
+	}()
+	<-bf.entered
+
+	closed := make(chan struct{})
+	go func() {
+		ts.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(30 * time.Second):
+		require.Fail(t, "Close waited for the connection to zone2")
+	}
+
+	bf.unblock()
+	select {
+	case err := <-connected:
+		require.Error(t, err)
+		require.Equal(t, vtrpcpb.Code_UNAVAILABLE, vterrors.Code(err))
+	case <-time.After(30 * time.Second):
+		require.Fail(t, "ConnForCell(zone2) did not return after Close")
+	}
+}
+
+// TestConnForCellWaiterReusesConnection checks that a caller that waits for
+// another caller's connection to the same cell gets that connection rather
+// than creating another one.
+func TestConnForCellWaiterReusesConnection(t *testing.T) {
+	ts, bf := newBlockingTopo(t)
+
+	type result struct {
+		conn topo.Conn
+		err  error
+	}
+	first := make(chan result, 1)
+	go func() {
+		conn, err := ts.ConnForCell(t.Context(), "zone2")
+		first <- result{conn, err}
+	}()
+	<-bf.entered
+
+	second := make(chan result, 1)
+	go func() {
+		conn, err := ts.ConnForCell(t.Context(), "zone2")
+		second <- result{conn, err}
+	}()
+	// Only let the first connection be created once the second caller
+	// waits for it.
+	assert.Eventually(t, func() bool {
+		return goroutinesInSemaphoreAcquire() == 1
+	}, 30*time.Second, 10*time.Millisecond)
+	bf.unblock()
+
+	r1, r2 := <-first, <-second
+	require.NoError(t, r1.err)
+	require.NoError(t, r2.err)
+	assert.Same(t, r1.conn, r2.conn)
+}
+
+// TestConnForCellRepointedCell checks that a cell whose ServerAddress changes
+// gets a new connection, which is then cached.
+func TestConnForCellRepointedCell(t *testing.T) {
+	ts, _ := newBlockingTopo(t)
+	ctx := t.Context()
+
+	before, err := ts.ConnForCell(ctx, "zone1")
+	require.NoError(t, err)
+
+	err = ts.UpdateCellInfoFields(ctx, "zone1", func(ci *topodatapb.CellInfo) error {
+		ci.ServerAddress = "repointed"
+		return nil
+	})
+	require.NoError(t, err)
+
+	after, err := ts.ConnForCell(ctx, "zone1")
+	require.NoError(t, err)
+	assert.NotSame(t, before, after)
+
+	cached, err := ts.ConnForCell(ctx, "zone1")
+	require.NoError(t, err)
+	assert.Same(t, after, cached)
+}
+
+// goroutinesInSemaphoreAcquire returns how many goroutines wait in
+// semaphore.Weighted.Acquire.
+func goroutinesInSemaphoreAcquire() int {
+	buf := make([]byte, 1<<20)
+	n := runtime.Stack(buf, true)
+	return strings.Count(string(buf[:n]), "semaphore.(*Weighted).Acquire")
 }
