@@ -56,6 +56,7 @@ import (
 
 	"vitess.io/vitess/go/vt/log"
 	"vitess.io/vitess/go/vt/proto/topodata"
+	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 	"vitess.io/vitess/go/vt/servenv"
 	"vitess.io/vitess/go/vt/utils"
 	"vitess.io/vitess/go/vt/vterrors"
@@ -144,7 +145,9 @@ type Server struct {
 	// It is set at construction time.
 	factory Factory
 
-	// mu protects the following fields.
+	// mu protects the following fields. It is never held while a
+	// connection to a cell is created, which can take as long as the
+	// cell's topo server takes to answer (see ConnForCell).
 	mu sync.Mutex
 	// cellConns contains clients configured to talk to a list of
 	// topo instances representing local topo clusters. These
@@ -152,6 +155,13 @@ type Server struct {
 	// will read the list of addresses for that cell from the
 	// global cluster and create clients as needed.
 	cellConns map[string]cellConn
+	// cellConnects holds, per cell, the semaphore that a ConnForCell
+	// holds while it creates the cell's connection, so that only one
+	// connection to a cell is created at a time.
+	cellConnects map[string]*semaphore.Weighted
+	// closed is set by Close: a connection created after it is closed
+	// rather than cached.
+	closed bool
 }
 
 type cellConn struct {
@@ -243,6 +253,7 @@ func NewWithFactory(factory Factory, serverAddress, root string) (*Server, error
 		globalReadOnlyCell: connReadOnly,
 		factory:            factory,
 		cellConns:          make(map[string]cellConn),
+		cellConnects:       make(map[string]*semaphore.Weighted),
 	}, nil
 }
 
@@ -301,31 +312,58 @@ func (ts *Server) ConnForCell(ctx context.Context, cell string) (Conn, error) {
 	}
 
 	// Return a cached client if present.
+	if conn, ok := ts.cachedConnForCell(cell, ci); ok {
+		return conn, nil
+	}
+
+	// Connect to the cell topo server while holding the cell's semaphore,
+	// not ts.mu: only one connection to a cell is established at any
+	// given time, and creating a connection to a cell whose topo server
+	// does not answer only delays the callers that need that cell. The
+	// etcd2topo factory, for one, waits up to its dial timeout for the
+	// server to answer.
 	ts.mu.Lock()
-	defer ts.mu.Unlock()
-	cc, ok := ts.cellConns[cell]
-	if ok {
-		// Client exists in cache.
-		// Let's verify that it is the same cell as we are looking for.
-		// The cell name can be re-used with a different ServerAddress and/or Root
-		// in which case we should get a new connection and update the cache
-		if ci.ServerAddress == cc.cellInfo.ServerAddress && ci.Root == cc.cellInfo.Root {
-			return cc.conn, nil
-		}
-		// Close the cached connection, we don't need it anymore
+	sem, ok := ts.cellConnects[cell]
+	if !ok {
+		sem = semaphore.NewWeighted(1)
+		ts.cellConnects[cell] = sem
+	}
+	ts.mu.Unlock()
+	if err := sem.Acquire(ctx, 1); err != nil {
+		return nil, err
+	}
+	defer sem.Release(1)
+
+	// Another caller may have connected while we waited.
+	if conn, ok := ts.cachedConnForCell(cell, ci); ok {
+		return conn, nil
+	}
+
+	// The cell name can be re-used with a different ServerAddress and/or
+	// Root, in which case the cached connection is closed and dropped:
+	// the callers that read the cell's CellInfo before it changed then
+	// wait for the new connection instead of using the closed one.
+	ts.mu.Lock()
+	if cc, ok := ts.cellConns[cell]; ok {
 		if cc.conn != nil {
 			cc.conn.Close()
 		}
+		delete(ts.cellConns, cell)
 	}
+	ts.mu.Unlock()
 
-	// Connect to the cell topo server, while holding the lock.
-	// This ensures only one connection is established at any given time.
 	// Create the connection and cache it
 	conn, err := ts.factory.Create(cell, ci.ServerAddress, ci.Root)
 	switch {
 	case err == nil:
 		cellReadSem := semaphore.NewWeighted(DefaultReadConcurrency)
 		conn = NewStatsConn(cell, conn, cellReadSem)
+		ts.mu.Lock()
+		defer ts.mu.Unlock()
+		if ts.closed {
+			conn.Close()
+			return nil, vterrors.Errorf(vtrpcpb.Code_UNAVAILABLE, "topo server closed while connecting to cell %v", cell)
+		}
 		ts.cellConns[cell] = cellConn{ci, conn}
 		return conn, nil
 	case IsErrType(err, NoNode):
@@ -334,6 +372,18 @@ func (ts *Server) ConnForCell(ctx context.Context, cell string) (Conn, error) {
 	default:
 		return nil, vterrors.Wrap(err, fmt.Sprintf("failed to create topo connection to %v, %v", ci.ServerAddress, ci.Root))
 	}
+}
+
+// cachedConnForCell returns the cached connection to cell, if there is one
+// for the ServerAddress and Root of ci.
+func (ts *Server) cachedConnForCell(cell string, ci *topodata.CellInfo) (Conn, bool) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	cc, ok := ts.cellConns[cell]
+	if !ok || ci.ServerAddress != cc.cellInfo.ServerAddress || ci.Root != cc.cellInfo.Root {
+		return nil, false
+	}
+	return cc.conn, true
 }
 
 // GetAliasByCell returns the alias group this `cell` belongs to, if there's none, it returns the `cell` as alias.
@@ -379,6 +429,7 @@ func (ts *Server) Close() {
 		cc.conn.Close()
 	}
 	ts.cellConns = make(map[string]cellConn)
+	ts.closed = true
 }
 
 func (ts *Server) clearCellAliasesCache() {
